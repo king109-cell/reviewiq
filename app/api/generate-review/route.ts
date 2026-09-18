@@ -22,19 +22,134 @@ const LANGUAGE_MAP: Record<string, string> = {
   other: 'English',
 };
 
+// Clean any AI thinking or meta text from response
+function cleanReview(raw: string): string {
+  if (!raw) return '';
+
+  // If response has numbered steps or asterisks it is thinking output
+  // Extract only clean paragraph text
+  const lines = raw.split('\n');
+  
+  const cleanLines = lines.filter(line => {
+    const l = line.trim();
+    if (!l) return false;
+    if (/^\d+[\.\)]/.test(l)) return false;
+    if (/^\*\*/.test(l)) return false;
+    if (/^\*[^*]/.test(l) && l.length < 50) return false;
+    if (/^(note|output|review:|here|begin|rule|word count|verification|let me|okay|sure|great)/i.test(l)) return false;
+    if (/\*\*[A-Za-z\s]+\*\*/.test(l) && l.length < 80) return false;
+    return true;
+  });
+
+  let result = cleanLines
+    .join(' ')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Remove incomplete last sentence
+  const lastPunct = Math.max(
+    result.lastIndexOf('.'),
+    result.lastIndexOf('!'),
+    result.lastIndexOf('?')
+  );
+
+  if (lastPunct > 30 && lastPunct < result.length - 1) {
+    result = result.substring(0, lastPunct + 1);
+  }
+
+  return result.trim();
+}
+
+// Retry logic — try up to 3 times
+async function callGeminiWithRetry(
+  prompt: string,
+  apiKey: string,
+  attempts = 3
+): Promise<string> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      console.log('Gemini attempt', i + 1);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+
+      const response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + apiKey,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.8,
+              maxOutputTokens: 500,
+            },
+          }),
+        }
+      );
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const err = await response.json();
+        console.error('Gemini error attempt', i + 1, err);
+        if (i === attempts - 1) throw new Error(err.error?.message || 'Gemini failed');
+        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+        continue;
+      }
+
+      const data = await response.json();
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+      if (!raw) {
+        if (i === attempts - 1) throw new Error('Empty response');
+        continue;
+      }
+
+      const cleaned = cleanReview(raw);
+      console.log('Raw length:', raw.length, 'Cleaned:', cleaned.substring(0, 80));
+
+      if (cleaned.length < 30) {
+        console.log('Review too short, retrying...');
+        if (i === attempts - 1) throw new Error('Review too short after cleaning');
+        continue;
+      }
+
+      return cleaned;
+
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        console.log('Timeout on attempt', i + 1);
+        if (i === attempts - 1) throw new Error('Request timed out. Please try again.');
+      } else {
+        if (i === attempts - 1) throw err;
+      }
+      await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+  throw new Error('All attempts failed');
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { businessName, businessType, businessId, language, answers, starRating } = body;
 
-    console.log('Generate review called:', { businessName, language, starRating });
+    console.log('Generate review:', { businessName, language, starRating });
 
     if (!businessName || !businessType || !language || !answers || !businessId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
+    if (!process.env.GEMINI_API_KEY) {
+      return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
+    }
+
     if (!checkRateLimit(businessId)) {
-      return NextResponse.json({ error: 'Too many reviews. Try again later.' }, { status: 429 });
+      return NextResponse.json({ error: 'Too many reviews. Try again in an hour.' }, { status: 429 });
     }
 
     const answersText = answers
@@ -44,55 +159,21 @@ export async function POST(req: NextRequest) {
     const lang = LANGUAGE_MAP[language] || 'English';
 
     const sentiment =
-      starRating <= 2 ? 'negative and honest about problems' :
-      starRating === 3 ? 'mixed with both positives and negatives' :
-      'positive and enthusiastic';
+      starRating <= 2 ? 'negative and critical' :
+      starRating === 3 ? 'mixed and balanced' :
+      'positive and warm';
 
-    const prompt = 'Write a ' + sentiment + ' Google review in ' + lang + ' for ' + businessName + ' (' + businessType + '). Customer experience: ' + answersText + '. Write 3-5 sentences in first person casual tone. Do not start with I visited. No hashtags. Output the review text only.';
+    const prompt = `Write a ${sentiment} Google review in ${lang} for ${businessName}.
+Customer said: ${answersText}
+Instructions: Write ONLY the review. 4 complete sentences. First person. Casual tone. No hashtags. Do not start with I visited. End with a complete sentence. Nothing else.`;
 
-    console.log('Calling Gemini REST API...');
-
-    const requestBody = {
-      contents: [
-        {
-          parts: [
-            {
-              text: prompt
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.9,
-        maxOutputTokens: 1024
-      }
-    };
-
-    const response = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + process.env.GEMINI_API_KEY,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      }
+    const review = await callGeminiWithRetry(
+      prompt,
+      process.env.GEMINI_API_KEY,
+      3
     );
 
-    const data = await response.json();
-    console.log('API response status:', response.status);
-
-    if (!response.ok) {
-      console.error('Gemini API error:', data);
-      throw new Error(data.error?.message || 'Gemini API failed');
-    }
-
-    const review = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    console.log('Generated review:', review);
-
-    if (!review || review.length < 20) {
-      return NextResponse.json({ error: 'Could not generate review' }, { status: 500 });
-    }
+    console.log('Final review:', review);
 
     const supabase = createSupabaseAdmin();
     const { data: session, error: dbError } = await supabase
@@ -103,19 +184,17 @@ export async function POST(req: NextRequest) {
         answers,
         generated_review: review,
         star_rating: starRating,
-        posted: false
+        posted: false,
       })
       .select()
       .single();
 
-    if (dbError) {
-      console.error('DB error:', dbError);
-    }
+    if (dbError) console.error('DB error:', dbError);
 
     return NextResponse.json({ review, sessionId: session?.id });
 
   } catch (err: any) {
-    console.error('Generate review error:', err);
+    console.error('Final error:', err.message);
     return NextResponse.json(
       { error: err.message || 'Failed to generate review' },
       { status: 500 }
