@@ -22,115 +22,62 @@ const LANGUAGE_MAP: Record<string, string> = {
   other: 'English',
 };
 
-// Clean any AI thinking or meta text from response
-function cleanReview(raw: string): string {
-  if (!raw) return '';
+async function callGroq(prompt: string, apiKey: string): Promise<string> {
+  const models = [
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'meta-llama/llama-4-maverick-17b-128e-instruct',
+    'llama3-70b-8192',
+    'llama3-8b-8192',
+  ];
 
-  // If response has numbered steps or asterisks it is thinking output
-  // Extract only clean paragraph text
-  const lines = raw.split('\n');
-  
-  const cleanLines = lines.filter(line => {
-    const l = line.trim();
-    if (!l) return false;
-    if (/^\d+[\.\)]/.test(l)) return false;
-    if (/^\*\*/.test(l)) return false;
-    if (/^\*[^*]/.test(l) && l.length < 50) return false;
-    if (/^(note|output|review:|here|begin|rule|word count|verification|let me|okay|sure|great)/i.test(l)) return false;
-    if (/\*\*[A-Za-z\s]+\*\*/.test(l) && l.length < 80) return false;
-    return true;
-  });
-
-  let result = cleanLines
-    .join(' ')
-    .replace(/\*\*/g, '')
-    .replace(/\*/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  // Remove incomplete last sentence
-  const lastPunct = Math.max(
-    result.lastIndexOf('.'),
-    result.lastIndexOf('!'),
-    result.lastIndexOf('?')
-  );
-
-  if (lastPunct > 30 && lastPunct < result.length - 1) {
-    result = result.substring(0, lastPunct + 1);
-  }
-
-  return result.trim();
-}
-
-// Retry logic — try up to 3 times
-async function callGeminiWithRetry(
-  prompt: string,
-  apiKey: string,
-  attempts = 3
-): Promise<string> {
-  for (let i = 0; i < attempts; i++) {
+  for (const model of models) {
     try {
-      console.log('Gemini attempt', i + 1);
+      console.log('Trying model:', model);
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-
-      const response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + apiKey,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.8,
-              maxOutputTokens: 500,
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + apiKey,
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            {
+              role: 'system',
+              content: 'You write short authentic Google reviews for local businesses. You write only the review text. No explanations. No meta text. No numbering. Just the review.',
             },
-          }),
-        }
-      );
-
-      clearTimeout(timeout);
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          temperature: 0.85,
+          max_tokens: 200,
+        }),
+      });
 
       if (!response.ok) {
         const err = await response.json();
-        console.error('Gemini error attempt', i + 1, err);
-        if (i === attempts - 1) throw new Error(err.error?.message || 'Gemini failed');
-        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+        console.log('Model failed:', model, err.error?.message);
         continue;
       }
 
       const data = await response.json();
-      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      const review = data.choices?.[0]?.message?.content?.trim();
 
-      if (!raw) {
-        if (i === attempts - 1) throw new Error('Empty response');
-        continue;
+      if (review && review.length > 30) {
+        console.log('Success with model:', model);
+        return review;
       }
 
-      const cleaned = cleanReview(raw);
-      console.log('Raw length:', raw.length, 'Cleaned:', cleaned.substring(0, 80));
-
-      if (cleaned.length < 30) {
-        console.log('Review too short, retrying...');
-        if (i === attempts - 1) throw new Error('Review too short after cleaning');
-        continue;
-      }
-
-      return cleaned;
-
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        console.log('Timeout on attempt', i + 1);
-        if (i === attempts - 1) throw new Error('Request timed out. Please try again.');
-      } else {
-        if (i === attempts - 1) throw err;
-      }
-      await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+    } catch (err) {
+      console.log('Error with model:', model, err);
+      continue;
     }
   }
-  throw new Error('All attempts failed');
+
+  throw new Error('All models failed');
 }
 
 export async function POST(req: NextRequest) {
@@ -144,7 +91,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
+    if (!process.env.GROQ_API_KEY) {
       return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
     }
 
@@ -159,20 +106,13 @@ export async function POST(req: NextRequest) {
     const lang = LANGUAGE_MAP[language] || 'English';
 
     const sentiment =
-      starRating <= 2 ? 'negative and critical' :
+      starRating <= 2 ? 'negative and critical, mentioning what went wrong' :
       starRating === 3 ? 'mixed and balanced' :
-      'positive and warm';
+      'positive and enthusiastic';
 
-    const prompt = `Write a ${sentiment} Google review in ${lang} for ${businessName}.
-Customer said: ${answersText}
-Instructions: Write ONLY the review. 4 complete sentences. First person. Casual tone. No hashtags. Do not start with I visited. End with a complete sentence. Nothing else.`;
+    const prompt = 'Write a ' + sentiment + ' Google review in ' + lang + ' for ' + businessName + ' (' + businessType + '). Customer experience: ' + answersText + '. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with I visited. No hashtags. Just the review text.';
 
-    const review = await callGeminiWithRetry(
-      prompt,
-      process.env.GEMINI_API_KEY,
-      3
-    );
-
+    const review = await callGroq(prompt, process.env.GROQ_API_KEY);
     console.log('Final review:', review);
 
     const supabase = createSupabaseAdmin();
@@ -196,7 +136,7 @@ Instructions: Write ONLY the review. 4 complete sentences. First person. Casual 
   } catch (err: any) {
     console.error('Final error:', err.message);
     return NextResponse.json(
-      { error: err.message || 'Failed to generate review' },
+      { error: 'Failed to generate review. Please try again.' },
       { status: 500 }
     );
   }
