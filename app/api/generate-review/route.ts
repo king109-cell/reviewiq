@@ -23,12 +23,9 @@ const LANGUAGE_MAP: Record<string, string> = {
 };
 
 async function callGroq(prompt: string, apiKey: string): Promise<string> {
-  // Updated list of currently supported Groq models
   const models = [
-    'llama-3.3-70b-versatile',
     'llama-3.1-8b-instant',
-    'llama-3.2-3b-preview',
-    'mixtral-8x7b-32768',
+    'llama-3.3-70b-versatile',
   ];
 
   for (const model of models) {
@@ -39,7 +36,7 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + apiKey,
+          'Authorization': `Bearer ${apiKey.trim()}`,
         },
         body: JSON.stringify({
           model: model,
@@ -55,30 +52,40 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
             },
           ],
           temperature: 0.85,
-          max_tokens: 200,
+          max_completion_tokens: 200,
         }),
       });
 
+      const rawText = await response.text();
+
       if (!response.ok) {
-        const errText = await response.text();
-        console.error(`Model ${model} failed (Status ${response.status}):`, errText);
+        console.error(`[Groq Error] Model: ${model} | Status: ${response.status} | Body: ${rawText}`);
+        
+        // If API Key is unauthorized or forbidden, stop looping and throw immediately
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(`Invalid Groq API Key (HTTP ${response.status})`);
+        }
+        
         continue;
       }
 
-      const data = await response.json();
+      const data = JSON.parse(rawText);
       const review = data.choices?.[0]?.message?.content?.trim();
 
       if (review && review.length > 20) {
         console.log('Success with model:', model);
         return review;
       }
-    } catch (err) {
-      console.error('Error with model:', model, err);
+    } catch (err: any) {
+      if (err.message.includes('Invalid Groq API Key')) {
+        throw err;
+      }
+      console.error(`[Model Failed] ${model}:`, err);
       continue;
     }
   }
 
-  throw new Error('All models failed');
+  throw new Error('All Groq models failed. Check console output above for precise API errors.');
 }
 
 export async function POST(req: NextRequest) {
@@ -92,7 +99,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    if (!process.env.GROQ_API_KEY) {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      console.error('GROQ_API_KEY is not defined in process.env');
       return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
     }
 
@@ -129,7 +138,7 @@ export async function POST(req: NextRequest) {
       answersText +
       '. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with I visited. No hashtags. Just the review text.';
 
-    const review = await callGroq(prompt, process.env.GROQ_API_KEY);
+    const review = await callGroq(prompt, apiKey);
     console.log('Final review:', review);
 
     const supabase = createSupabaseAdmin();
@@ -152,7 +161,7 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     console.error('Final error:', err.message);
     return NextResponse.json(
-      { error: 'Failed to generate review. Please try again.' },
+      { error: err.message || 'Failed to generate review. Please try again.' },
       { status: 500 }
     );
   }
