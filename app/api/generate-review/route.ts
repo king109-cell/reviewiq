@@ -23,11 +23,12 @@ const LANGUAGE_MAP: Record<string, string> = {
 };
 
 async function callGroq(prompt: string, apiKey: string): Promise<string> {
+  // Updated list of currently supported Groq models
   const models = [
-    'meta-llama/llama-4-scout-17b-16e-instruct',
-    'meta-llama/llama-4-maverick-17b-128e-instruct',
-    'llama3-70b-8192',
-    'llama3-8b-8192',
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'llama-3.2-3b-preview',
+    'mixtral-8x7b-32768',
   ];
 
   for (const model of models) {
@@ -45,7 +46,8 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
           messages: [
             {
               role: 'system',
-              content: 'You write short authentic Google reviews for local businesses. You write only the review text. No explanations. No meta text. No numbering. Just the review.',
+              content:
+                'You write short authentic Google reviews for local businesses. You write only the review text. No explanations. No meta text. No numbering. Just the review.',
             },
             {
               role: 'user',
@@ -58,21 +60,20 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        console.log('Model failed:', model, err.error?.message);
+        const errText = await response.text();
+        console.error(`Model ${model} failed (Status ${response.status}):`, errText);
         continue;
       }
 
       const data = await response.json();
       const review = data.choices?.[0]?.message?.content?.trim();
 
-      if (review && review.length > 30) {
+      if (review && review.length > 20) {
         console.log('Success with model:', model);
         return review;
       }
-
     } catch (err) {
-      console.log('Error with model:', model, err);
+      console.error('Error with model:', model, err);
       continue;
     }
   }
@@ -96,7 +97,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (!checkRateLimit(businessId)) {
-      return NextResponse.json({ error: 'Too many reviews. Try again in an hour.' }, { status: 429 });
+      return NextResponse.json(
+        { error: 'Too many reviews. Try again in an hour.' },
+        { status: 429 }
+      );
     }
 
     const answersText = answers
@@ -106,11 +110,24 @@ export async function POST(req: NextRequest) {
     const lang = LANGUAGE_MAP[language] || 'English';
 
     const sentiment =
-      starRating <= 2 ? 'negative and critical, mentioning what went wrong' :
-      starRating === 3 ? 'mixed and balanced' :
-      'positive and enthusiastic';
+      starRating <= 2
+        ? 'negative and critical, mentioning what went wrong'
+        : starRating === 3
+        ? 'mixed and balanced'
+        : 'positive and enthusiastic';
 
-    const prompt = 'Write a ' + sentiment + ' Google review in ' + lang + ' for ' + businessName + ' (' + businessType + '). Customer experience: ' + answersText + '. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with I visited. No hashtags. Just the review text.';
+    const prompt =
+      'Write a ' +
+      sentiment +
+      ' Google review in ' +
+      lang +
+      ' for ' +
+      businessName +
+      ' (' +
+      businessType +
+      '). Customer experience: ' +
+      answersText +
+      '. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with I visited. No hashtags. Just the review text.';
 
     const review = await callGroq(prompt, process.env.GROQ_API_KEY);
     console.log('Final review:', review);
@@ -132,7 +149,6 @@ export async function POST(req: NextRequest) {
     if (dbError) console.error('DB error:', dbError);
 
     return NextResponse.json({ review, sessionId: session?.id });
-
   } catch (err: any) {
     console.error('Final error:', err.message);
     return NextResponse.json(
