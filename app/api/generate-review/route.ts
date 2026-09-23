@@ -22,11 +22,41 @@ const LANGUAGE_MAP: Record<string, string> = {
   other: 'English',
 };
 
-async function callGroq(prompt: string, apiKey: string): Promise<string> {
-  const models = [
-    'llama-3.1-8b-instant',
+// Helper function to fetch active Groq model IDs dynamically
+async function getAvailableGroqModels(apiKey: string): Promise<string[]> {
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${apiKey.trim()}`,
+      },
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const models = data.data
+        ?.map((m: any) => m.id)
+        ?.filter((id: string) => !id.includes('whisper') && !id.includes('guard')); // Exclude audio and guardrail models
+
+      if (models && models.length > 0) {
+        console.log('Fetched active Groq models:', models);
+        return models;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to fetch dynamic model list from Groq:', err);
+  }
+
+  // Fallback defaults if listing API fails
+  return [
     'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'openai/gpt-oss-20b',
+    'meta-llama/llama-3.3-70b-instruct'
   ];
+}
+
+async function callGroq(prompt: string, apiKey: string): Promise<string> {
+  const models = await getAvailableGroqModels(apiKey);
 
   for (const model of models) {
     try {
@@ -59,27 +89,23 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
       const rawText = await response.text();
 
       if (!response.ok) {
-        console.error(`[Groq Error] Model: ${model} | Status: ${response.status} | Body: ${rawText}`);
+        console.error(`[Groq Error] Model: ${model} | Status: ${response.status} | Response: ${rawText}`);
         
-        // If API Key is unauthorized or forbidden, stop looping and throw immediately
-        if (response.status === 401 || response.status === 403) {
-          throw new Error(`Invalid Groq API Key (HTTP ${response.status})`);
+        if (response.status === 401) {
+          throw new Error('Invalid Groq API Key (HTTP 401)');
         }
-        
         continue;
       }
 
       const data = JSON.parse(rawText);
       const review = data.choices?.[0]?.message?.content?.trim();
 
-      if (review && review.length > 20) {
+      if (review && review.length > 15) {
         console.log('Success with model:', model);
         return review;
       }
     } catch (err: any) {
-      if (err.message.includes('Invalid Groq API Key')) {
-        throw err;
-      }
+      if (err.message.includes('Invalid Groq API Key')) throw err;
       console.error(`[Model Failed] ${model}:`, err);
       continue;
     }
@@ -93,7 +119,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { businessName, businessType, businessId, language, answers, starRating } = body;
 
-    console.log('Generate review:', { businessName, language, starRating });
+    console.log('Generate review payload:', { businessName, language, starRating });
 
     if (!businessName || !businessType || !language || !answers || !businessId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
@@ -101,8 +127,8 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
-      console.error('GROQ_API_KEY is not defined in process.env');
-      return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
+      console.error('GROQ_API_KEY environment variable is missing.');
+      return NextResponse.json({ error: 'AI key not configured' }, { status: 500 });
     }
 
     if (!checkRateLimit(businessId)) {
@@ -112,9 +138,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const answersText = answers
-      .map((qa: { question: string; answer: string }) => qa.question + ': ' + qa.answer)
-      .join('. ');
+    const answersText = Array.isArray(answers)
+      ? answers.map((qa: { question: string; answer: string }) => qa.question + ': ' + qa.answer).join('. ')
+      : '';
 
     const lang = LANGUAGE_MAP[language] || 'English';
 
@@ -125,21 +151,10 @@ export async function POST(req: NextRequest) {
         ? 'mixed and balanced'
         : 'positive and enthusiastic';
 
-    const prompt =
-      'Write a ' +
-      sentiment +
-      ' Google review in ' +
-      lang +
-      ' for ' +
-      businessName +
-      ' (' +
-      businessType +
-      '). Customer experience: ' +
-      answersText +
-      '. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with I visited. No hashtags. Just the review text.';
+    const prompt = `Write a ${sentiment} Google review in ${lang} for ${businessName} (${businessType}). Customer experience: ${answersText}. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with "I visited". No hashtags. Just the review text.`;
 
     const review = await callGroq(prompt, apiKey);
-    console.log('Final review:', review);
+    console.log('Generated Review Output:', review);
 
     const supabase = createSupabaseAdmin();
     const { data: session, error: dbError } = await supabase
@@ -155,11 +170,13 @@ export async function POST(req: NextRequest) {
       .select()
       .single();
 
-    if (dbError) console.error('DB error:', dbError);
+    if (dbError) {
+      console.error('Supabase DB error:', dbError);
+    }
 
     return NextResponse.json({ review, sessionId: session?.id });
   } catch (err: any) {
-    console.error('Final error:', err.message);
+    console.error('Final Route Error:', err.message);
     return NextResponse.json(
       { error: err.message || 'Failed to generate review. Please try again.' },
       { status: 500 }
