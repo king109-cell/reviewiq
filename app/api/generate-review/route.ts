@@ -151,7 +151,7 @@ export async function POST(req: NextRequest) {
         ? 'mixed and balanced'
         : 'positive and enthusiastic';
 
-    const prompt = `Write a ${sentiment} Google review in ${lang} for ${businessName} (${businessType}). Customer experience: ${answersText}. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with "I visited". No hashtags. Just the review text.`;
+    const prompt = `Write a ${sentiment} Google review in ${lang} for ${businessName} (${businessType}). Customer experience: ${answersText}. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with "I visited" or use words like "yo". No hashtags. Just the review text.`;
 
     const review = await callGroq(prompt, apiKey);
     console.log('Generated Review Output:', review);
