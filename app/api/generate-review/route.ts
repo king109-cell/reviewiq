@@ -22,7 +22,7 @@ const LANGUAGE_MAP: Record<string, string> = {
   other: 'English',
 };
 
-// Fetch currently available models directly from Groq to avoid 404 errors
+// Helper function to fetch active Groq model IDs dynamically
 async function getAvailableGroqModels(apiKey: string): Promise<string[]> {
   try {
     const res = await fetch('https://api.groq.com/openai/v1/models', {
@@ -35,7 +35,7 @@ async function getAvailableGroqModels(apiKey: string): Promise<string[]> {
       const data = await res.json();
       const models = data.data
         ?.map((m: any) => m.id)
-        ?.filter((id: string) => !id.includes('whisper') && !id.includes('guard'));
+        ?.filter((id: string) => !id.includes('whisper') && !id.includes('guard')); // Exclude audio and guardrail models
 
       if (models && models.length > 0) {
         console.log('Fetched active Groq models:', models);
@@ -46,11 +46,12 @@ async function getAvailableGroqModels(apiKey: string): Promise<string[]> {
     console.error('Failed to fetch dynamic model list from Groq:', err);
   }
 
-  // Fallback defaults if models endpoint fails
+  // Fallback defaults if listing API fails
   return [
     'llama-3.3-70b-versatile',
     'llama-3.1-8b-instant',
-    'mixtral-8x7b-32768',
+    'openai/gpt-oss-20b',
+    'meta-llama/llama-3.3-70b-instruct'
   ];
 }
 
@@ -73,15 +74,15 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
             {
               role: 'system',
               content:
-                'You write professional, authentic, highly favorable, and well-crafted Google reviews for local businesses. Your review must be articulate, polite, and warmly recommend the business based on the user provided feedback. Output ONLY the review text. No introductory remarks, no quotes, no explanations, no numbering, and no hashtags.',
+                'You write short authentic Google reviews for local businesses. You write only the review text. No explanations. No meta text. No numbering. Just the review.',
             },
             {
               role: 'user',
               content: prompt,
             },
           ],
-          temperature: 0.7, // Lower temperature slightly for a more polished and professional tone
-          max_completion_tokens: 250,
+          temperature: 0.85,
+          max_completion_tokens: 200,
         }),
       });
 
@@ -99,7 +100,7 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
       const data = JSON.parse(rawText);
       const review = data.choices?.[0]?.message?.content?.trim();
 
-      if (review && review.length > 20) {
+      if (review && review.length > 15) {
         console.log('Success with model:', model);
         return review;
       }
@@ -110,7 +111,7 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
     }
   }
 
-  throw new Error('All Groq models failed. Check console logs for exact error details.');
+  throw new Error('All Groq models failed. Check console output above for precise API errors.');
 }
 
 export async function POST(req: NextRequest) {
@@ -143,16 +144,14 @@ export async function POST(req: NextRequest) {
 
     const lang = LANGUAGE_MAP[language] || 'English';
 
-    // Constructing a prompt that enforces a professional, business-favorable tone based on customer answers
-    const prompt = `Write a highly favorable, extremely professional Google review in ${lang} for ${businessName} (a ${businessType} business). 
-Customer Feedback Details: ${answersText}. 
-Guidelines:
-- Express genuine appreciation, highlighting specific details from the customer's feedback.
-- Maintain a highly professional, respectful, and articulate tone.
-- Strongly advocate for and recommend this business.
-- Write 3 to 4 complete sentences in first-person perspective.
-- Avoid informal slang, conversational filler, or starting with "I visited".
-- Provide ONLY the review text.`;
+    const sentiment =
+      starRating <= 2
+        ? 'negative and critical, mentioning what went wrong'
+        : starRating === 3
+        ? 'mixed and balanced'
+        : 'positive and enthusiastic';
+
+    const prompt = `Write a ${sentiment} Google review in ${lang} for ${businessName} (${businessType}). Customer experience: ${answersText}. Write 3 to 5 complete sentences. First person. Casual natural tone. Do not start with "I visited". No hashtags. Just the review text.`;
 
     const review = await callGroq(prompt, apiKey);
     console.log('Generated Review Output:', review);
