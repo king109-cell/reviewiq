@@ -20,12 +20,10 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
   }
 }
 
-// Updated active production models on Groq
+// Officially supported Groq models for production & free tier usage
 const GROQ_MODELS = [
-  'llama-3.3-70b-versatile',
-  'llama3-8b-8192',
-  'llama3-70b-8192',
-  'mixtral-8x7b-32768'
+  'llama-3.3-70b-versatile', // Primary: Highly capable, high quality, active on free tier
+  'llama-3.1-8b-instant'     // Fast fallback
 ];
 
 function buildPrompt(
@@ -37,23 +35,24 @@ function buildPrompt(
 ): string {
   const sentiment =
     starRating <= 2
-      ? 'honest and critical, mentioning specific problems'
+      ? 'honest and constructive, bringing up specific problems experienced'
       : starRating === 3
-      ? 'balanced, mentioning both positives and areas to improve'
-      : 'warm, genuine and appreciative';
+      ? 'fair and balanced, sharing both pros and areas for growth'
+      : 'enthusiastic, warm, and highly satisfied';
 
-  return `You are a real customer writing an authentic, human-sounding Google review for ${businessName}, a ${businessType} in India.
+  return `You are a real customer writing an authentic, human-sounding Google review for ${businessName}, a local ${businessType} in India.
 
-Customer experience details:
+Customer Experience Answers:
 ${answersText}
 
-Writing rules:
+STRICT WRITING RULES:
 1. Language: Write the ENTIRE review in ${language || 'English'}.
-2. Tone & Style: Write a ${sentiment} review using simple, natural everyday language. Avoid corporate fluff or robotic marketing speak (NEVER use words like "exceptional", "unmatched quality", "testament").
-3. Content: Include 2 to 3 specific details from the customer experience provided. Do not fabricate extra details not mentioned.
-4. Structure: Keep it concise (2 to 4 sentences, ~30 to 75 words). Do NOT start with "I visited" or "I went to".
-5. Formatting: No slang, no emojis, no hashtags, no markdown, and no quotes.
-6. Output: Return ONLY the raw review text string.
+2. Tone & SEO: Write a ${sentiment} review using simple, everyday natural language. Organically mention key terms related to ${businessType} and ${businessName} to enhance local search visibility without keyword-stuffing.
+3. Authenticity: Avoid AI cliché buzzwords (NEVER use words like "exceptional", "unmatched", "testament", "seamless", "strive", "top-notch", "impeccable", "delighted").
+4. Specifics: Incorporate 2 to 3 specific details from the customer experience provided above. Do not invent details not mentioned.
+5. Length & Flow: Keep it concise (2 to 4 sentences, ~35 to 80 words). Do NOT begin with "I visited", "I went to", or "As a customer".
+6. Formatting: No emojis, no hashtags, no quotation marks around the review, and no markdown.
+7. Output: Return ONLY the final raw review text.
 
 Write the review text now:`;
 }
@@ -67,7 +66,7 @@ async function generateWithGroq(
   for (const model of GROQ_MODELS) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s timeout per request
+      const timeoutId = setTimeout(() => controller.abort(), 7000); // 7s timeout per attempt
 
       const response = await fetch(
         'https://api.groq.com/openai/v1/chat/completions',
@@ -84,14 +83,14 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You are an expert review writer. You write natural, human-sounding, authentic Google reviews. You follow all instructions exactly and return only the requested review text.',
+                  'You write realistic, natural, human-written Google reviews for local businesses in India. You follow all style and length instructions strictly and return only the raw review output.',
               },
               {
                 role: 'user',
                 content: prompt,
               },
             ],
-            temperature: 0.75,
+            temperature: 0.7,
             max_tokens: 250,
           }),
         }
@@ -101,14 +100,14 @@ async function generateWithGroq(
 
       if (!response.ok) {
         const err = await response.json();
-        lastError = new Error(err.error?.message || `Groq model ${model} failed`);
+        lastError = new Error(err.error?.message || `Groq model ${model} failed with status ${response.status}`);
         continue;
       }
 
       const data = await response.json();
       const review = data.choices?.[0]?.message?.content?.trim();
 
-      if (review && review.length >= 30) {
+      if (review && review.length >= 25) {
         return review;
       }
     } catch (err: any) {
