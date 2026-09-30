@@ -20,23 +20,23 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
   }
 }
 
-// Convert raw survey dropdown answers into natural conversational feedback
+// Convert questionnaire choice values into natural conversational observations
 function formatAnswerNaturally(question: string, answer: string): string {
   const cleanAns = answer.trim();
   const lowerAns = cleanAns.toLowerCase();
 
-  // Handle common option keywords smoothly
-  if (lowerAns === 'good' || lowerAns === 'very good') return 'tasted great and fresh';
-  if (lowerAns === 'acceptable' || lowerAns === 'okay') return 'decent and clean enough';
-  if (lowerAns === 'just right') return 'well maintained and comfortable';
-  if (lowerAns === 'slow') return 'took a little extra time to come out';
-  if (lowerAns === 'fast' || lowerAns === 'very fast') return 'served quickly without delay';
-  if (lowerAns === 'unlikely') return 'a bit mixed on whether to come back right away';
+  // Convert raw survey dropdowns into conversational human phrases
+  if (lowerAns === 'good' || lowerAns === 'very good') return 'food was hot and fresh';
+  if (lowerAns === 'acceptable' || lowerAns === 'okay') return 'decent and clean seating area';
+  if (lowerAns === 'just right') return 'place was well kept';
+  if (lowerAns === 'slow') return 'service took a bit longer than expected';
+  if (lowerAns === 'fast' || lowerAns === 'very fast') return 'food came out quickly';
+  if (lowerAns === 'unlikely') return 'mixed on going back anytime soon';
 
   return cleanAns;
 }
 
-// Fetch available active models directly from Groq API
+// Fetch active models directly from Groq API
 async function getActiveGroqModels(apiKey: string): Promise<string[]> {
   try {
     const res = await fetch('https://api.groq.com/openai/v1/models', {
@@ -82,39 +82,24 @@ function buildPrompt(
   starRating: number,
   language: string
 ): string {
-  const isPositive = starRating >= 4;
-  const isNeutral = starRating === 3;
-
-  return `Write ONE authentic, natural Google review for "${businessName}" (${businessType}).
+  return `Write a realistic, human-written Google Maps review for "${businessName}" (${businessType}).
 
 Customer Experience Notes:
 ${answersText}
 
-STRICT HUMAN-WRITING INSTRUCTIONS:
-1. PERSPECTIVE & VOICE:
-   - Write as a local resident writing a quick Google Maps review from their phone.
-   - Use simple, everyday casual spoken English.
-   - NEVER mention country names, national descriptions, or generic labels like "an Indian restaurant", "Indian spot", "a local establishment", or "place in India". Everyone locally already knows where the business is located.
+CRITICAL RULES (VIOLATIONS WILL CAUSE SYSTEM FAILURE):
+1. NO HEADLINES OR TITLES: Do NOT start with any title (e.g. NEVER write "Delicious Pizza at...", "Great Food at...", "Average Food...", "Welcoming Staff..."). Start directly with the first sentence of the review.
+2. NO AI BUZZWORDS & DRAMATIC PHRASES:
+   - FORBIDDEN WORDS: "scrumptious", "top-notch", "devoured", "array of choices", "cuisine department", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "decent choice", "room for improvement".
+3. NO EMOJIS, HASHTAGS, OR QUOTES: Do NOT include emojis (like 😍, 👍, 🍕), bullet points, markdown formatting, or surrounding quotation marks.
+4. REAL LOCAL PERSON VOICE:
+   - Write like a normal person writing a 2-3 sentence review on their phone on Google Maps.
+   - Speak about the actual food item, cleanliness, or waiting time naturally.
+   - Do NOT say "a local Indian restaurant" or mention country names.
+5. LENGTH: 2 to 4 sentences maximum (35 to 55 words total).
+6. LANGUAGE: Entire review must be in ${language || 'English'}.
 
-2. TONE (${starRating}/5 Stars):
-   ${isPositive 
-     ? '- Enthusiastic, genuine, and encouraging.' 
-     : isNeutral 
-     ? '- Balanced and fair. Mention what was good while politely noting what could be improved, without sounding overly harsh or dramatic.' 
-     : '- Constructive and direct about the specific issues experienced.'}
-
-3. ANTI-AI & ANTI-SURVEY RULES:
-   - NEVER use corporate or survey phrasing like "food quality was good", "overall experience", "friendly staff", "room for improvement", "I recently visited", "I had a delightful experience", or "I would recommend it to a friend".
-   - NEVER start with "I visited", "I went to", "Visited", "As a customer", or "Recently dined".
-   - Start directly with a specific detail (e.g., "Stopped by ${businessName}...", "The food at ${businessName}...", "Grabbed a quick bite at ${businessName}...").
-   - NO cliché AI words: "exceptional", "unmatched", "testament", "seamless", "strive", "top-notch", "impeccable", "delighted", "kudos", "scrumptious", "ambiance".
-
-4. LENGTH & FORMAT:
-   - Write 1 single brief paragraph (2 to 4 short sentences, around 35 to 60 words).
-   - Entire review must be in ${language || 'English'}.
-   - NO quotes, NO titles, NO headers, NO bullet points, NO emojis, NO markdown.
-
-Write ONLY the review text now:`;
+Output ONLY the raw review sentence paragraph. Nothing else.`;
 }
 
 async function generateWithGroq(
@@ -144,15 +129,15 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You write natural, human-sounding Google reviews for local businesses. You never use formal survey phrases, national references, or AI buzzwords. Output ONLY the raw review text.',
+                  'You write ultra-realistic, simple Google Maps reviews. You never write titles, headlines, emojis, or exaggerated marketing adjectives. You output ONLY 2-3 simple raw sentences.',
               },
               {
                 role: 'user',
                 content: prompt,
               },
             ],
-            temperature: 0.9,
-            max_tokens: 180,
+            temperature: 0.75,
+            max_tokens: 150,
           }),
         }
       );
@@ -185,20 +170,20 @@ async function generateWithGroq(
 function fixReview(review: string): string {
   let fixed = review.trim();
 
-  // Strip unwanted metadata, headers, or list markers
+  // 1. Strip away headlines/titles matching "Words at BusinessName" or "Adjective Noun at..."
+  fixed = fixed.replace(/^([^.\n!?]+(?:at|@)[^.\n!?]+[\n\r:]+)/gi, '');
+  fixed = fixed.replace(/^[A-Z0-9\s,–—\-]+(?:at|@)\s+[A-Z0-9\s]+(?:\n|\r|:)\s*/gi, '');
+
+  // 2. Remove common title prefixes (e.g. "Title:", "Review:", "1.")
   fixed = fixed.replace(/^(Title|Review|Option|\d+[\.\)]|\#+)\s*:\s*/gi, '');
   fixed = fixed.replace(/^\d+\.\s*/gm, '');
 
-  if (fixed.includes('2.') || fixed.toLowerCase().includes('title:')) {
-    const parts = fixed.split(/(?=\b\d+\.|\bTitle:|\bReview:)/i);
-    if (parts.length > 0 && parts[0].trim().length > 20) {
-      fixed = parts[0].trim();
-    }
-  }
+  // 3. Strip all emojis and non-standard unicode symbols
+  fixed = fixed.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '');
 
-  // Strip leftover markdown, quotes, and formatting artifacts
+  // 4. Strip markdown formatting, surrounding quotes, and redundant spaces
   fixed = fixed
-    .replace(/^["']|["']$/g, '')
+    .replace(/^["'«“]|["'»”]$/g, '')
     .replace(/\*\*/g, '')
     .replace(/\*/g, '')
     .replace(/#{1,6}\s/g, '')
@@ -207,22 +192,21 @@ function fixReview(review: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Hard filter to guarantee no generic nationality labels exist
+  // 5. Filter out nationality / country mentions if present
   fixed = fixed
     .replace(/,\s*a\s+local\s+Indian\s+restaurant/gi, '')
     .replace(/,\s*an\s+Indian\s+restaurant/gi, '')
     .replace(/\s+in\s+India\b/gi, '')
-    .replace(/\s+Indian\s+spot\b/gi, ' spot')
-    .replace(/\s+local\s+Indian\s+spot\b/gi, ' local spot');
+    .replace(/\s+Indian\s+spot\b/gi, ' spot');
 
-  // Ensure clean sentence ending
+  // 6. Ensure proper sentence termination
   const lastPunct = Math.max(
     fixed.lastIndexOf('.'),
     fixed.lastIndexOf('!'),
     fixed.lastIndexOf('?')
   );
 
-  if (lastPunct > 25 && lastPunct < fixed.length - 1) {
+  if (lastPunct > 20 && lastPunct < fixed.length - 1) {
     fixed = fixed.substring(0, lastPunct + 1);
   }
 
