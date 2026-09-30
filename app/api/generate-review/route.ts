@@ -20,6 +20,74 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
   }
 }
 
+// Transform questionnaire inputs into natural spoken phrases
+function synthesizeAnswers(answers: { question: string; answer: string }[]): string {
+  return answers
+    .map((qa) => {
+      const q = qa.question.toLowerCase();
+      const a = qa.answer.trim();
+      const lowerA = a.toLowerCase();
+
+      // Dish/Food ordered
+      if (q.includes('order') || q.includes('dish') || q.includes('item')) {
+        return `- Customer ordered: ${a}`;
+      }
+
+      // Food Quality
+      if (q.includes('food') || q.includes('quality') || q.includes('taste')) {
+        if (lowerA.includes('excellent') || lowerA.includes('tasty') || lowerA.includes('delicious'))
+          return '- Food experience: Fresh, hot, and really delicious';
+        if (lowerA.includes('good')) return '- Food experience: Tasted good and well prepared';
+        if (lowerA.includes('average') || lowerA.includes('okay') || lowerA.includes('decent'))
+          return '- Food experience: Average taste, nothing special';
+        if (lowerA.includes('poor') || lowerA.includes('bad') || lowerA.includes('cold'))
+          return '- Food experience: Poor quality and disappointing';
+      }
+
+      // Staff & Hospitality
+      if (q.includes('staff') || q.includes('service') || q.includes('friendly')) {
+        if (lowerA.includes('welcoming') || lowerA.includes('friendly') || lowerA.includes('great'))
+          return '- Staff behavior: Super friendly and attentive';
+        if (lowerA.includes('polite') || lowerA.includes('okay'))
+          return '- Staff behavior: Polite and standard';
+        if (lowerA.includes('unfriendly') || lowerA.includes('rude') || lowerA.includes('bad'))
+          return '- Staff behavior: Inattentive and untrained';
+      }
+
+      // Cleanliness & Environment
+      if (q.includes('clean') || q.includes('tidy') || q.includes('dining')) {
+        if (lowerA.includes('spotless') || lowerA.includes('clean'))
+          return '- Environment: Clean, tidy, and well kept';
+        if (lowerA.includes('acceptable') || lowerA.includes('okay'))
+          return '- Environment: Decent seating area';
+        if (lowerA.includes('dirty') || lowerA.includes('untidy') || lowerA.includes('messy'))
+          return '- Environment: Tables were untidy and messy';
+      }
+
+      // Service Speed
+      if (q.includes('speed') || q.includes('fast') || q.includes('time')) {
+        if (lowerA.includes('fast') || lowerA.includes('quick'))
+          return '- Speed: Order came out very quickly';
+        if (lowerA.includes('just right') || lowerA.includes('normal'))
+          return '- Speed: Reasonable wait time';
+        if (lowerA.includes('slow') || lowerA.includes('long'))
+          return '- Speed: Service took way too long';
+      }
+
+      // Recommendation / Intent
+      if (q.includes('recommend') || q.includes('likely') || q.includes('friend')) {
+        if (lowerA.includes('very likely') || lowerA.includes('definitely'))
+          return '- Intent: Will definitely return and recommend to friends';
+        if (lowerA.includes('maybe')) return '- Intent: Might check it out again sometime';
+        if (lowerA.includes('unlikely') || lowerA.includes('no'))
+          return '- Intent: Won\'t be coming back anytime soon';
+      }
+
+      return `- ${qa.question}: ${a}`;
+    })
+    .join('\n');
+}
+
 // Dynamically fetch available models directly from Groq API
 async function getActiveGroqModels(apiKey: string): Promise<string[]> {
   try {
@@ -62,46 +130,54 @@ async function getActiveGroqModels(apiKey: string): Promise<string[]> {
 function buildPrompt(
   businessName: string,
   businessType: string,
-  answersText: string,
+  synthesizedContext: string,
   starRating: number,
   language: string
 ): string {
-  // Randomize customer perspective angles to make retries/variations unique
-  const angles = [
-    'a regular customer leaving a quick feedback note',
-    'someone who visited recently for a casual bite',
-    'a local resident dropping a honest review on Google Maps',
-    'a customer sharing their genuine experience after a visit',
+  // Opening sentence anchor variations
+  const starterStyles = [
+    `Start directly by mentioning what was eaten or ordered at ${businessName}.`,
+    `Start directly with a note on the staff or service speed.`,
+    `Start directly with an observation about the seating area or cleanliness.`,
+    `Start directly with a quick comment about the food quality.`,
   ];
-  const randomAngle = angles[Math.floor(Math.random() * angles.length)];
+  const selectedStyle = starterStyles[Math.floor(Math.random() * starterStyles.length)];
 
-  return `You are ${randomAngle}. Write ONE natural, authentic Google Maps review for "${businessName}" (${businessType}).
+  // Tone adjustments matching star ratings
+  let toneGuidance = 'Write a casual, balanced review.';
+  if (starRating >= 4) {
+    toneGuidance = 'Tone: Satisfied and warm casual recommendation.';
+  } else if (starRating <= 2) {
+    toneGuidance = 'Tone: Frustrated, direct, and blunt. Speak directly about what went wrong.';
+  } else {
+    toneGuidance = 'Tone: Honest and mixed experience.';
+  }
 
-Customer Experience Feedback:
-${answersText}
+  return `You are a real customer leaving a quick, authentic Google Maps review for "${businessName}" (${businessType}).
+
+CUSTOMER VISIT CONTEXT:
+${synthesizedContext}
+
+${toneGuidance}
+
+OPENING STYLE FOR THIS REVIEW:
+${selectedStyle}
 
 STRICT WRITING RULES:
-1. FAITHFUL TO CUSTOMER INPUT:
-   - Base the review ENTIRELY on the customer experience points above.
-   - If they mentioned slow service, include that naturally. If they praised the food or cleanliness, include that.
-   - Convert any survey choices into natural conversational sentences without directly quoting survey option names (like "Acceptable" or "Just right").
-   - For poor or average visits, write naturally blunt customer feedback—DO NOT use formal business phrases like "lacked friendliness", "purchased for a casual bite", "considering the service", or "disappointing experience".
-2. STRICT FORMATTING & ZERO TITLES:
-   - NO HEADLINES OR TITLES: NEVER write titles (e.g. DO NOT start with "Delicious Food...", "Great Place...", "Average Review...", "Welcoming Staff...").
-   - Start immediately with the first sentence of the review.
+1. NO HEADLINES OR TITLES:
+   - NEVER write titles (e.g., DO NOT write "Delicious Food at...", "Average Visit...", "Poor Service...").
+   - Start immediately with sentence #1.
+
+2. AUTHENTIC SMARTPHONE VOICE:
+   - Write as if typing on a smartphone screen.
    - NO EMOJIS, NO HASHTAGS, NO BULLET POINTS, NO QUOTATION MARKS.
+   - FORBIDDEN WORDS: "purchased for a casual bite", "lacked friendliness", "considering the service", "disappointing experience", "scrumptious", "devoured", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "decent choice", "room for improvement", "top-notch".
+   - DO NOT start with "I visited", "I went to", "I stopped by", or "As a customer".
 
-3. ANTI-AI & HUMANOID VOICE:
-   - Write like a real person typing on a smartphone keyboard.
-   - NEVER use corporate or fake AI words: "scrumptious", "devoured", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "decent choice", "room for improvement", "Indian restaurant", "place in India""purchased pizza for a casual bite", "lacked friendliness", "considering the...", "overall experience", "spotless", "top-notch".
-   - DO NOT use cliché openings like "I visited", "I went to", or "As a customer".
-  - Use simple everyday words: instead of "lacked friendliness" write "staff was rude" or "staff didn't care"; instead of "seemed dirty" write "tables were messy".
+3. LENGTH & LANGUAGE:
+   - Exactly 2 to 3 concise sentences (30 to 50 words total).
+   - Language: ${language || 'English'}.
 
-4. LENGTH & LANGUAGE:
-   - 2 to 4 sentences maximum (30 to 60 words).
-   - Write completely in ${language || 'English'}.
-
-   lastly remember one thing that the review should seems written by a real customer not by ai 
 Output ONLY the raw review paragraph text.`;
 }
 
@@ -132,7 +208,7 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You write ultra-realistic, simple Google Maps reviews based on customer survey answers. You never output titles, headlines, emojis, or exaggerated marketing words. You output ONLY 2-4 simple raw sentences.',
+                  'You generate ultra-realistic, simple Google Maps reviews written on a phone. You never output headlines, titles, emojis, corporate buzzwords, or formal phrasing. Output ONLY raw review sentences.',
               },
               {
                 role: 'user',
@@ -140,7 +216,8 @@ async function generateWithGroq(
               },
             ],
             temperature: 0.85,
-            max_tokens: 180,
+            top_p: 0.9,
+            max_tokens: 160,
           }),
         }
       );
@@ -173,15 +250,15 @@ async function generateWithGroq(
 function fixReview(review: string): string {
   let fixed = review.trim();
 
-  // 1. Strip away headlines/titles matching "Title at BusinessName" or "Adjective Noun at..."
+  // 1. Strip headlines/titles matching "Title at BusinessName" or "Adjective Noun at..."
   fixed = fixed.replace(/^([^.\n!?]+(?:at|@)[^.\n!?]+[\n\r:]+)/gi, '');
   fixed = fixed.replace(/^[A-Z0-9\s,–—\-]+(?:at|@)\s+[A-Z0-9\s]+(?:\n|\r|:)\s*/gi, '');
 
-  // 2. Remove common title/label prefixes (e.g. "Title:", "Review:", "1.")
+  // 2. Remove common title/label prefixes (e.g., "Title:", "Review:", "1.")
   fixed = fixed.replace(/^(Title|Review|Option|\d+[\.\)]|\#+)\s*:\s*/gi, '');
   fixed = fixed.replace(/^\d+\.\s*/gm, '');
 
-  // 3. Strip all emojis and non-standard symbols
+  // 3. Strip all emojis and non-standard unicode symbols
   fixed = fixed.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '');
 
   // 4. Strip markdown formatting, surrounding quotes, and redundant spaces
@@ -195,7 +272,7 @@ function fixReview(review: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // 5. Filter out nationality / country mentions if present
+  // 5. Filter out repetitive location/country descriptors
   fixed = fixed
     .replace(/,\s*a\s+local\s+Indian\s+restaurant/gi, '')
     .replace(/,\s*an\s+Indian\s+restaurant/gi, '')
@@ -263,15 +340,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Pass exact QA pairs directly so the review accurately reflects what the user selected
-    const answersText = validAnswers
-      .map((qa: { question: string; answer: string }) => `- ${qa.question}: ${qa.answer.trim()}`)
-      .join('\n');
+    // Synthesize raw QA pairs into rich conversational context
+    const synthesizedContext = synthesizeAnswers(validAnswers);
 
     const prompt = buildPrompt(
       businessName,
       businessType,
-      answersText,
+      synthesizedContext,
       starRating,
       language
     );
