@@ -20,7 +20,23 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
   }
 }
 
-// Dynamically fetch available models directly from Groq API
+// Convert raw survey dropdown answers into natural conversational feedback
+function formatAnswerNaturally(question: string, answer: string): string {
+  const cleanAns = answer.trim();
+  const lowerAns = cleanAns.toLowerCase();
+
+  // Handle common option keywords smoothly
+  if (lowerAns === 'good' || lowerAns === 'very good') return 'tasted great and fresh';
+  if (lowerAns === 'acceptable' || lowerAns === 'okay') return 'decent and clean enough';
+  if (lowerAns === 'just right') return 'well maintained and comfortable';
+  if (lowerAns === 'slow') return 'took a little extra time to come out';
+  if (lowerAns === 'fast' || lowerAns === 'very fast') return 'served quickly without delay';
+  if (lowerAns === 'unlikely') return 'a bit mixed on whether to come back right away';
+
+  return cleanAns;
+}
+
+// Fetch available active models directly from Groq API
 async function getActiveGroqModels(apiKey: string): Promise<string[]> {
   try {
     const res = await fetch('https://api.groq.com/openai/v1/models', {
@@ -36,13 +52,10 @@ async function getActiveGroqModels(apiKey: string): Promise<string[]> {
       .map((m: { id: string }) => m.id)
       .filter((id: string) => !id.includes('whisper') && !id.includes('vision') && !id.includes('safetensors'));
 
-    // Preferred priority models
     const priorityOrder = [
       'llama-3.3-70b-versatile',
       'llama-3.1-70b-versatile',
       'llama-3.1-8b-instant',
-      'llama3-70b-8192',
-      'llama3-8b-8192',
       'gemma2-9b-it',
     ];
 
@@ -69,31 +82,39 @@ function buildPrompt(
   starRating: number,
   language: string
 ): string {
-  const sentiment =
-    starRating <= 2
-      ? 'honest, polite, and constructive, sharing areas for improvement'
-      : starRating === 3
-      ? 'fair and balanced, sharing both positives and areas to improve'
-      : 'warm, genuine, highly appreciative, and recommending';
+  const isPositive = starRating >= 4;
+  const isNeutral = starRating === 3;
 
-  return `Write ONE single, natural Google review for ${businessName}, a local ${businessType} in India.
+  return `Write ONE authentic, natural Google review for "${businessName}" (${businessType}).
 
 Customer Experience Notes:
 ${answersText}
 
-STRICT REQUIREMENTS:
-1. Language: Write entirely in ${language || 'English'}.
-2. Tone: A ${sentiment} review using conversational human tone. Mention key aspects naturally for SEO without keyword stuffing.
-3. Length: Exactly 1 single paragraph (2 to 4 sentences, ~35 to 70 words).
-4. ABSOLUTE FORBIDDEN FORMATTING:
-   - DO NOT include titles (NO "Title:"), headings, numbers (NO "1.", "2."), or labels (NO "Review:").
-   - DO NOT write multiple review options or variations.
-   - DO NOT quote survey rating labels like "(Acceptable)", "(Good)", "(Just right)", or "(Unlikely)". Speak in natural English sentences instead.
-   - DO NOT use AI words: "exceptional", "unmatched", "testament", "seamless", "strive", "top-notch", "impeccable", "delighted".
-   - NO emojis, hashtags, bullet points, quotes, or markdown.
-5. Opening: NEVER start with "I visited", "I went to", or "As a customer".
+STRICT HUMAN-WRITING INSTRUCTIONS:
+1. PERSPECTIVE & VOICE:
+   - Write as a local resident writing a quick Google Maps review from their phone.
+   - Use simple, everyday casual spoken English.
+   - NEVER mention country names, national descriptions, or generic labels like "an Indian restaurant", "Indian spot", "a local establishment", or "place in India". Everyone locally already knows where the business is located.
 
-OUTPUT ONLY THE SINGLE RAW REVIEW PARAGRAPH TEXT. NOTHING ELSE.`;
+2. TONE (${starRating}/5 Stars):
+   ${isPositive 
+     ? '- Enthusiastic, genuine, and encouraging.' 
+     : isNeutral 
+     ? '- Balanced and fair. Mention what was good while politely noting what could be improved, without sounding overly harsh or dramatic.' 
+     : '- Constructive and direct about the specific issues experienced.'}
+
+3. ANTI-AI & ANTI-SURVEY RULES:
+   - NEVER use corporate or survey phrasing like "food quality was good", "overall experience", "friendly staff", "room for improvement", "I recently visited", "I had a delightful experience", or "I would recommend it to a friend".
+   - NEVER start with "I visited", "I went to", "Visited", "As a customer", or "Recently dined".
+   - Start directly with a specific detail (e.g., "Stopped by ${businessName}...", "The food at ${businessName}...", "Grabbed a quick bite at ${businessName}...").
+   - NO cliché AI words: "exceptional", "unmatched", "testament", "seamless", "strive", "top-notch", "impeccable", "delighted", "kudos", "scrumptious", "ambiance".
+
+4. LENGTH & FORMAT:
+   - Write 1 single brief paragraph (2 to 4 short sentences, around 35 to 60 words).
+   - Entire review must be in ${language || 'English'}.
+   - NO quotes, NO titles, NO headers, NO bullet points, NO emojis, NO markdown.
+
+Write ONLY the review text now:`;
 }
 
 async function generateWithGroq(
@@ -106,7 +127,7 @@ async function generateWithGroq(
   for (const model of availableModels) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
 
       const response = await fetch(
         'https://api.groq.com/openai/v1/chat/completions',
@@ -123,15 +144,15 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You are a customer writing a single short Google review paragraph. Output ONLY raw review text. NEVER include titles, numbers, headers, "Review:", or option labels.',
+                  'You write natural, human-sounding Google reviews for local businesses. You never use formal survey phrases, national references, or AI buzzwords. Output ONLY the raw review text.',
               },
               {
                 role: 'user',
                 content: prompt,
               },
             ],
-            temperature: 0.8,
-            max_tokens: 200,
+            temperature: 0.9,
+            max_tokens: 180,
           }),
         }
       );
@@ -164,11 +185,10 @@ async function generateWithGroq(
 function fixReview(review: string): string {
   let fixed = review.trim();
 
-  // 1. Remove titles, numbered prefixes, "Review:", "Title:", etc.
+  // Strip unwanted metadata, headers, or list markers
   fixed = fixed.replace(/^(Title|Review|Option|\d+[\.\)]|\#+)\s*:\s*/gi, '');
   fixed = fixed.replace(/^\d+\.\s*/gm, '');
 
-  // If AI dumped multiple reviews, keep only the first one
   if (fixed.includes('2.') || fixed.toLowerCase().includes('title:')) {
     const parts = fixed.split(/(?=\b\d+\.|\bTitle:|\bReview:)/i);
     if (parts.length > 0 && parts[0].trim().length > 20) {
@@ -176,7 +196,7 @@ function fixReview(review: string): string {
     }
   }
 
-  // 2. Strip quotes, markdown, bullet artifacts
+  // Strip leftover markdown, quotes, and formatting artifacts
   fixed = fixed
     .replace(/^["']|["']$/g, '')
     .replace(/\*\*/g, '')
@@ -187,19 +207,15 @@ function fixReview(review: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // 3. Remove inline survey rating artifacts like "(Acceptable)", "(Good)", "(Just right)"
-  fixed = fixed.replace(/\((Acceptable\vert{}Good\vert{}Okay\vert{}Unlikely\vert{}Just right\vert{}Very good\vert{}Bad)\)/gi, '');
+  // Hard filter to guarantee no generic nationality labels exist
+  fixed = fixed
+    .replace(/,\s*a\s+local\s+Indian\s+restaurant/gi, '')
+    .replace(/,\s*an\s+Indian\s+restaurant/gi, '')
+    .replace(/\s+in\s+India\b/gi, '')
+    .replace(/\s+Indian\s+spot\b/gi, ' spot')
+    .replace(/\s+local\s+Indian\s+spot\b/gi, ' local spot');
 
-  // 4. Strip clunky openings if present
-  if (fixed.toLowerCase().startsWith('i visited')) {
-    const spaceIndex = fixed.indexOf(' ', 10);
-    if (spaceIndex !== -1) {
-      fixed = fixed.substring(spaceIndex).trim();
-      fixed = fixed.charAt(0).toUpperCase() + fixed.slice(1);
-    }
-  }
-
-  // 5. Ensure it ends properly at the last complete sentence
+  // Ensure clean sentence ending
   const lastPunct = Math.max(
     fixed.lastIndexOf('.'),
     fixed.lastIndexOf('!'),
@@ -260,8 +276,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Process customer choices into natural human phrasing
     const answersText = validAnswers
-      .map((qa: { question: string; answer: string }) => `- ${qa.question}: ${qa.answer}`)
+      .map(
+        (qa: { question: string; answer: string }) =>
+          `- ${qa.question}: ${formatAnswerNaturally(qa.question, qa.answer)}`
+      )
       .join('\n');
 
     const prompt = buildPrompt(
