@@ -85,7 +85,8 @@ STRICT WRITING RULES:
    - Base the review ENTIRELY on the customer experience points above.
    - If they mentioned slow service, include that naturally. If they praised the food or cleanliness, include that.
    - Convert any survey choices into natural conversational sentences without directly quoting survey option names (like "Acceptable" or "Just right").
-
+   - Reflect the positive or negative sentiment strictly matching the feedback points above.
+   - For poor or average visits, write naturally blunt customer feedback—DO NOT use formal business phrases like "lacked friendliness", "purchased for a casual bite", "considering the service", or "disappointing experience".
 2. STRICT FORMATTING & ZERO TITLES:
    - NO HEADLINES OR TITLES: NEVER write titles (e.g. DO NOT start with "Delicious Food...", "Great Place...", "Average Review...", "Welcoming Staff...").
    - Start immediately with the first sentence of the review.
@@ -93,8 +94,9 @@ STRICT WRITING RULES:
 
 3. ANTI-AI & HUMANOID VOICE:
    - Write like a real person typing on a smartphone keyboard.
-   - NEVER use corporate or fake AI words: "scrumptious", "top-notch", "devoured", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "decent choice", "room for improvement", "Indian restaurant", "place in India".
+   - NEVER use corporate or fake AI words: "scrumptious", "top-notch", "devoured", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "decent choice", "room for improvement", "Indian restaurant", "place in India""purchased pizza for a casual bite", "lacked friendliness", "considering the...", "overall experience", "nonetheless", "spotless", "top-notch".
    - DO NOT use cliché openings like "I visited", "I went to", or "As a customer".
+  - Use simple everyday words: instead of "lacked friendliness" write "staff was rude" or "staff didn't care"; instead of "seemed dirty" write "tables were messy".
 
 4. LENGTH & LANGUAGE:
    - 2 to 4 sentences maximum (30 to 60 words).
