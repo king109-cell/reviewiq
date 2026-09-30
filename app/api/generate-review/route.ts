@@ -1,25 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabaseServer';
 
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+// Rate limiting using Supabase DB count (serverless safe)
+async function checkDbRateLimit(businessId: string): Promise<boolean> {
+  try {
+    const supabase = createSupabaseAdmin();
+    const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
 
-function checkRateLimit(businessId: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(businessId);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(businessId, { count: 1, resetAt: now + 3600000 });
+    const { count, error } = await supabase
+      .from('review_sessions')
+      .select('id', { count: 'exact', head: true })
+      .eq('business_id', businessId)
+      .gte('created_at', oneHourAgo);
+
+    if (error || count === null) return true; // Fail open if DB query issues arise
+    return count < 25; // Max 25 generated reviews per hour per business
+  } catch {
     return true;
   }
-  if (entry.count >= 10) return false;
-  entry.count++;
-  return true;
 }
+
+const GROQ_MODELS = [
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'meta-llama/llama-4-maverick-17b-128e-instruct',
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
+];
 
 function buildPrompt(
   businessName: string,
   businessType: string,
   answersText: string,
-  starRating: number
+  starRating: number,
+  language: string
 ): string {
   const sentiment =
     starRating <= 2
@@ -28,88 +41,88 @@ function buildPrompt(
       ? 'balanced, mentioning both positives and areas to improve'
       : 'warm, genuine and appreciative';
 
-  return `You are a real customer writing a Google review. Write a ${sentiment} review for ${businessName}, a ${businessType} in India.
+  return `You are a real customer writing an authentic, human-sounding Google review for ${businessName}, a ${businessType} in India.
 
 Customer experience details:
 ${answersText}
 
-Writing rules you must follow strictly:
-- Write between 60 to 90 words exactly
-- Use natural first person language like a real educated Indian customer
-- Sound genuine and specific, not generic or promotional
-- Do NOT start with "I visited" or "I went to"
-- Include 2 to 3 specific details from the customer experience
-- Use professional yet warm language
-- No slang, no casual internet language, no emojis
-- No hashtags
-- End with one complete meaningful closing sentence
-- Write ONLY the review text, nothing else
-- No explanations, no meta text, no word count
+Writing rules:
+1. Language: Write the ENTIRE review in ${language || 'English'}.
+2. Tone & Style: Write a ${sentiment} review using simple, natural everyday language. Avoid corporate fluff or robotic marketing speak (NEVER use words like "exceptional", "unmatched quality", "testament").
+3. Content: Include 2 to 3 specific details from the customer experience provided. Do not fabricate extra details not mentioned.
+4. Structure: Keep it concise (2 to 4 sentences, ~30 to 75 words). Do NOT start with "I visited" or "I went to".
+5. Formatting: No slang, no emojis, no hashtags, no markdown, and no quotes.
+6. Output: Return ONLY the raw review text string.
 
-Write the complete review now:`;
+Write the review text now:`;
 }
 
 async function generateWithGroq(
   prompt: string,
   apiKey: string
 ): Promise<string> {
-  const response = await fetch(
-    'https://api.groq.com/openai/v1/chat/completions',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + apiKey,
-      },
-      body: JSON.stringify({
-        model: 'llama3-70b-8192',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are an expert review writer. You write complete, professional, genuine-sounding Google reviews for local Indian businesses. You always write the full review without cutting off. You never use slang or unprofessional language. You follow all instructions exactly.',
+  let lastError: Error | null = null;
+
+  for (const model of GROQ_MODELS) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s timeout per request
+
+      const response = await fetch(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
           },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        temperature: 0.7,
-        max_tokens: 300,
-        stop: null,
-      }),
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You are an expert review writer. You write natural, human-sounding, authentic Google reviews. You follow all instructions exactly and return only the requested review text.',
+              },
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+            temperature: 0.75,
+            max_tokens: 250,
+          }),
+        }
+      );
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const err = await response.json();
+        lastError = new Error(err.error?.message || `Groq model ${model} failed`);
+        continue;
+      }
+
+      const data = await response.json();
+      const review = data.choices?.[0]?.message?.content?.trim();
+
+      if (review && review.length >= 30) {
+        return review;
+      }
+    } catch (err: any) {
+      lastError = err;
     }
-  );
-
-  if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.error?.message || 'Groq API failed');
   }
 
-  const data = await response.json();
-  const review = data.choices?.[0]?.message?.content?.trim();
-
-  if (!review || review.length < 40) {
-    throw new Error('Review too short');
-  }
-
-  return review;
-}
-
-function validateReview(review: string): boolean {
-  if (review.length < 40) return false;
-  if (review.length > 600) return false;
-
-  const lastChar = review[review.length - 1];
-  if (!['.', '!', '?'].includes(lastChar)) return false;
-
-  return true;
+  throw lastError || new Error('All AI models failed to generate response.');
 }
 
 function fixReview(review: string): string {
   let fixed = review.trim();
 
   fixed = fixed
+    .replace(/^["']|["']$/g, '')
     .replace(/\*\*/g, '')
     .replace(/\*/g, '')
     .replace(/#{1,6}\s/g, '')
@@ -120,8 +133,11 @@ function fixReview(review: string): string {
     .trim();
 
   if (fixed.toLowerCase().startsWith('i visited')) {
-    fixed = fixed.substring(fixed.indexOf(' ', 10)).trim();
-    fixed = fixed.charAt(0).toUpperCase() + fixed.slice(1);
+    const spaceIndex = fixed.indexOf(' ', 10);
+    if (spaceIndex !== -1) {
+      fixed = fixed.substring(spaceIndex).trim();
+      fixed = fixed.charAt(0).toUpperCase() + fixed.slice(1);
+    }
   }
 
   const lastPunct = Math.max(
@@ -130,7 +146,7 @@ function fixReview(review: string): string {
     fixed.lastIndexOf('?')
   );
 
-  if (lastPunct > 30 && lastPunct < fixed.length - 1) {
+  if (lastPunct > 25 && lastPunct < fixed.length - 1) {
     fixed = fixed.substring(0, lastPunct + 1);
   }
 
@@ -144,25 +160,12 @@ export async function POST(req: NextRequest) {
       businessName,
       businessType,
       businessId,
-      language,
+      language = 'English',
       answers,
       starRating,
     } = body;
 
-    console.log('Generate review:', {
-      businessName,
-      businessType,
-      language,
-      starRating,
-    });
-
-    if (
-      !businessName ||
-      !businessType ||
-      !language ||
-      !answers ||
-      !businessId
-    ) {
+    if (!businessName || !businessType || !answers || !businessId) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }
@@ -171,90 +174,74 @@ export async function POST(req: NextRequest) {
 
     if (!process.env.GROQ_API_KEY) {
       return NextResponse.json(
-        { error: 'AI service not configured' },
+        { error: 'AI service missing configuration key' },
         { status: 500 }
       );
     }
 
-    if (!checkRateLimit(businessId)) {
+    // Filter valid customer answers
+    const validAnswers = Array.isArray(answers)
+      ? answers.filter((qa: any) => qa.answer && qa.answer.trim().length > 0)
+      : [];
+
+    if (validAnswers.length === 0) {
       return NextResponse.json(
-        { error: 'Too many reviews generated. Please try again later.' },
+        { error: 'Please provide at least one answer.' },
+        { status: 400 }
+      );
+    }
+
+    // Serverless-safe rate limiting
+    const isAllowed = await checkDbRateLimit(businessId);
+    if (!isAllowed) {
+      return NextResponse.json(
+        { error: 'Rate limit reached for this business. Please try again later.' },
         { status: 429 }
       );
     }
 
-    const answersText = answers
-      .map(
-        (qa: { question: string; answer: string }) =>
-          `- ${qa.question}: ${qa.answer}`
-      )
+    const answersText = validAnswers
+      .map((qa: { question: string; answer: string }) => `- ${qa.question}: ${qa.answer}`)
       .join('\n');
 
     const prompt = buildPrompt(
       businessName,
       businessType,
       answersText,
-      starRating
+      starRating,
+      language
     );
 
-    let review = '';
-    let attempts = 0;
-    const maxAttempts = 3;
+    const raw = await generateWithGroq(prompt, process.env.GROQ_API_KEY);
+    const review = fixReview(raw);
 
-    while (attempts < maxAttempts) {
-      attempts++;
-      console.log('Attempt', attempts);
-
-      try {
-        const raw = await generateWithGroq(prompt, process.env.GROQ_API_KEY);
-        const fixed = fixReview(raw);
-
-        if (validateReview(fixed)) {
-          review = fixed;
-          console.log('Good review on attempt', attempts, ':', review);
-          break;
-        } else {
-          console.log('Review failed validation, retrying...');
-        }
-      } catch (err: any) {
-        console.log('Attempt', attempts, 'failed:', err.message);
-        if (attempts === maxAttempts) {
-          throw err;
-        }
-        await new Promise((r) => setTimeout(r, 1000 * attempts));
-      }
-    }
-
-    if (!review) {
+    if (!review || review.length < 25) {
       return NextResponse.json(
-        { error: 'Could not generate a complete review. Please try again.' },
+        { error: 'Could not generate a valid review. Please try again.' },
         { status: 500 }
       );
     }
 
+    // Insert into Supabase async (handles session persistence)
     const supabase = createSupabaseAdmin();
-    const { data: session, error: dbError } = await supabase
+    const { data: session } = await supabase
       .from('review_sessions')
       .insert({
         business_id: businessId,
         language,
-        answers,
+        answers: validAnswers,
         generated_review: review,
         star_rating: starRating,
         posted: false,
       })
-      .select()
+      .select('id')
       .single();
 
-    if (dbError) {
-      console.error('DB error:', dbError);
-    }
-
-    return NextResponse.json({ review, sessionId: session?.id });
+    return NextResponse.json({ review, sessionId: session?.id || null });
   } catch (err: any) {
-    console.error('Final error:', err.message);
+    console.error('Final API Handler error:', err.message);
     return NextResponse.json(
-      { error: 'Failed to generate review. Please try again.' },
+      { error: err.message || 'Failed to generate review.' },
       { status: 500 }
     );
   }
