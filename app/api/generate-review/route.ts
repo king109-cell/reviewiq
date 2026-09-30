@@ -20,23 +20,7 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
   }
 }
 
-// Convert questionnaire choice values into natural conversational observations
-function formatAnswerNaturally(question: string, answer: string): string {
-  const cleanAns = answer.trim();
-  const lowerAns = cleanAns.toLowerCase();
-
-  // Convert raw survey dropdowns into conversational human phrases
-  if (lowerAns === 'good' || lowerAns === 'very good') return 'food was hot and fresh';
-  if (lowerAns === 'acceptable' || lowerAns === 'okay') return 'decent and clean seating area';
-  if (lowerAns === 'just right') return 'place was well kept';
-  if (lowerAns === 'slow') return 'service took a bit longer than expected';
-  if (lowerAns === 'fast' || lowerAns === 'very fast') return 'food came out quickly';
-  if (lowerAns === 'unlikely') return 'mixed on going back anytime soon';
-
-  return cleanAns;
-}
-
-// Fetch active models directly from Groq API
+// Dynamically fetch available models directly from Groq API
 async function getActiveGroqModels(apiKey: string): Promise<string[]> {
   try {
     const res = await fetch('https://api.groq.com/openai/v1/models', {
@@ -82,24 +66,41 @@ function buildPrompt(
   starRating: number,
   language: string
 ): string {
-  return `Write a realistic, human-written Google Maps review for "${businessName}" (${businessType}).
+  // Randomize customer perspective angles to make retries/variations unique
+  const angles = [
+    'a regular customer leaving a quick feedback note',
+    'someone who visited recently for a casual bite',
+    'a local resident dropping a honest review on Google Maps',
+    'a customer sharing their genuine experience after a visit',
+  ];
+  const randomAngle = angles[Math.floor(Math.random() * angles.length)];
 
-Customer Experience Notes:
+  return `You are ${randomAngle}. Write ONE natural, authentic Google Maps review for "${businessName}" (${businessType}).
+
+Customer Experience Feedback:
 ${answersText}
 
-CRITICAL RULES (VIOLATIONS WILL CAUSE SYSTEM FAILURE):
-1. NO HEADLINES OR TITLES: Do NOT start with any title (e.g. NEVER write "Delicious Pizza at...", "Great Food at...", "Average Food...", "Welcoming Staff..."). Start directly with the first sentence of the review.
-2. NO AI BUZZWORDS & DRAMATIC PHRASES:
-   - FORBIDDEN WORDS: "scrumptious", "top-notch", "devoured", "array of choices", "cuisine department", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "decent choice", "room for improvement".
-3. NO EMOJIS, HASHTAGS, OR QUOTES: Do NOT include emojis (like 😍, 👍, 🍕), bullet points, markdown formatting, or surrounding quotation marks.
-4. REAL LOCAL PERSON VOICE:
-   - Write like a normal person writing a 2-3 sentence review on their phone on Google Maps.
-   - Speak about the actual food item, cleanliness, or waiting time naturally.
-   - Do NOT say "a local Indian restaurant" or mention country names.
-5. LENGTH: 2 to 4 sentences maximum (35 to 55 words total).
-6. LANGUAGE: Entire review must be in ${language || 'English'}.
+STRICT WRITING RULES:
+1. FAITHFUL TO CUSTOMER INPUT:
+   - Base the review ENTIRELY on the customer experience points above.
+   - If they mentioned slow service, include that naturally. If they praised the food or cleanliness, include that.
+   - Convert any survey choices into natural conversational sentences without directly quoting survey option names (like "Acceptable" or "Just right").
 
-Output ONLY the raw review sentence paragraph. Nothing else.`;
+2. STRICT FORMATTING & ZERO TITLES:
+   - NO HEADLINES OR TITLES: NEVER write titles (e.g. DO NOT start with "Delicious Food...", "Great Place...", "Average Review...", "Welcoming Staff...").
+   - Start immediately with the first sentence of the review.
+   - NO EMOJIS, NO HASHTAGS, NO BULLET POINTS, NO QUOTATION MARKS.
+
+3. ANTI-AI & HUMANOID VOICE:
+   - Write like a real person typing on a smartphone keyboard.
+   - NEVER use corporate or fake AI words: "scrumptious", "top-notch", "devoured", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "decent choice", "room for improvement", "Indian restaurant", "place in India".
+   - DO NOT use cliché openings like "I visited", "I went to", or "As a customer".
+
+4. LENGTH & LANGUAGE:
+   - 2 to 4 sentences maximum (30 to 60 words).
+   - Write completely in ${language || 'English'}.
+
+Output ONLY the raw review paragraph text.`;
 }
 
 async function generateWithGroq(
@@ -129,15 +130,15 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You write ultra-realistic, simple Google Maps reviews. You never write titles, headlines, emojis, or exaggerated marketing adjectives. You output ONLY 2-3 simple raw sentences.',
+                  'You write ultra-realistic, simple Google Maps reviews based on customer survey answers. You never output titles, headlines, emojis, or exaggerated marketing words. You output ONLY 2-4 simple raw sentences.',
               },
               {
                 role: 'user',
                 content: prompt,
               },
             ],
-            temperature: 0.75,
-            max_tokens: 150,
+            temperature: 0.85,
+            max_tokens: 180,
           }),
         }
       );
@@ -170,15 +171,15 @@ async function generateWithGroq(
 function fixReview(review: string): string {
   let fixed = review.trim();
 
-  // 1. Strip away headlines/titles matching "Words at BusinessName" or "Adjective Noun at..."
+  // 1. Strip away headlines/titles matching "Title at BusinessName" or "Adjective Noun at..."
   fixed = fixed.replace(/^([^.\n!?]+(?:at|@)[^.\n!?]+[\n\r:]+)/gi, '');
   fixed = fixed.replace(/^[A-Z0-9\s,–—\-]+(?:at|@)\s+[A-Z0-9\s]+(?:\n|\r|:)\s*/gi, '');
 
-  // 2. Remove common title prefixes (e.g. "Title:", "Review:", "1.")
+  // 2. Remove common title/label prefixes (e.g. "Title:", "Review:", "1.")
   fixed = fixed.replace(/^(Title|Review|Option|\d+[\.\)]|\#+)\s*:\s*/gi, '');
   fixed = fixed.replace(/^\d+\.\s*/gm, '');
 
-  // 3. Strip all emojis and non-standard unicode symbols
+  // 3. Strip all emojis and non-standard symbols
   fixed = fixed.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '');
 
   // 4. Strip markdown formatting, surrounding quotes, and redundant spaces
@@ -260,12 +261,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Process customer choices into natural human phrasing
+    // Pass exact QA pairs directly so the review accurately reflects what the user selected
     const answersText = validAnswers
-      .map(
-        (qa: { question: string; answer: string }) =>
-          `- ${qa.question}: ${formatAnswerNaturally(qa.question, qa.answer)}`
-      )
+      .map((qa: { question: string; answer: string }) => `- ${qa.question}: ${qa.answer.trim()}`)
       .join('\n');
 
     const prompt = buildPrompt(
