@@ -20,11 +20,10 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
   }
 }
 
-// Active Groq models (Primary: llama-3.3-70b-versatile)
+// Officially supported Groq models (No deprecated legacy models)
 const GROQ_MODELS = [
   'llama-3.3-70b-versatile',
-  'llama3-70b-8192',
-  'llama3-8b-8192',
+  'llama-3.1-8b-instant',
 ];
 
 function buildPrompt(
@@ -102,9 +101,9 @@ async function generateWithGroq(
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
         const errorMessage = err.error?.message || `Groq status ${response.status}`;
-        console.warn(`Model ${model} unavailable on Groq: ${errorMessage}. Trying next model...`);
+        console.warn(`Model ${model} returned error: ${errorMessage}. Trying next model...`);
         lastError = new Error(errorMessage);
-        continue; // Fall through to next model cleanly
+        continue;
       }
 
       const data = await response.json();
