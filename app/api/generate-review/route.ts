@@ -76,21 +76,24 @@ function buildPrompt(
       ? 'fair and balanced, sharing both positives and areas to improve'
       : 'warm, genuine, highly appreciative, and recommending';
 
-  return `You are a real customer writing an authentic, human-sounding Google review for ${businessName}, a local ${businessType} in India.
+  return `Write ONE single, natural Google review for ${businessName}, a local ${businessType} in India.
 
-Customer Experience Details:
+Customer Experience Notes:
 ${answersText}
 
-STRICT RULES:
-1. Language: Write the ENTIRE review in ${language || 'English'}.
-2. Tone & SEO: Write a ${sentiment} review using simple, everyday natural language. Organically mention key terms related to ${businessType} and ${businessName} so it boosts local Google Maps search ranking, without sounding fake.
-3. Anti-AI Rules: Avoid AI cliché buzzwords (NEVER use words like "exceptional", "unmatched", "testament", "seamless", "strive", "top-notch", "impeccable", "delighted", "kudos").
-4. Specifics: Include 2 to 3 key details directly from the customer answers above. Do NOT invent fake details.
-5. Length & Opening: Keep it concise (2 to 4 sentences, ~35 to 75 words). NEVER start with "I visited", "I went to", or "As a customer".
-6. Formatting: No emojis, no hashtags, no quotation marks, no markdown, and no bullet points.
-7. Output: Return ONLY the final raw review text string.
+STRICT REQUIREMENTS:
+1. Language: Write entirely in ${language || 'English'}.
+2. Tone: A ${sentiment} review using conversational human tone. Mention key aspects naturally for SEO without keyword stuffing.
+3. Length: Exactly 1 single paragraph (2 to 4 sentences, ~35 to 70 words).
+4. ABSOLUTE FORBIDDEN FORMATTING:
+   - DO NOT include titles (NO "Title:"), headings, numbers (NO "1.", "2."), or labels (NO "Review:").
+   - DO NOT write multiple review options or variations.
+   - DO NOT quote survey rating labels like "(Acceptable)", "(Good)", "(Just right)", or "(Unlikely)". Speak in natural English sentences instead.
+   - DO NOT use AI words: "exceptional", "unmatched", "testament", "seamless", "strive", "top-notch", "impeccable", "delighted".
+   - NO emojis, hashtags, bullet points, quotes, or markdown.
+5. Opening: NEVER start with "I visited", "I went to", or "As a customer".
 
-Write the review text now:`;
+OUTPUT ONLY THE SINGLE RAW REVIEW PARAGRAPH TEXT. NOTHING ELSE.`;
 }
 
 async function generateWithGroq(
@@ -120,15 +123,15 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You write realistic, natural, human-written Google reviews for local businesses in India. You follow all style and length instructions strictly and return only the raw review output.',
+                  'You are a customer writing a single short Google review paragraph. Output ONLY raw review text. NEVER include titles, numbers, headers, "Review:", or option labels.',
               },
               {
                 role: 'user',
                 content: prompt,
               },
             ],
-            temperature: 0.7,
-            max_tokens: 250,
+            temperature: 0.8,
+            max_tokens: 200,
           }),
         }
       );
@@ -161,17 +164,33 @@ async function generateWithGroq(
 function fixReview(review: string): string {
   let fixed = review.trim();
 
+  // 1. Remove titles, numbered prefixes, "Review:", "Title:", etc.
+  fixed = fixed.replace(/^(Title|Review|Option|\d+[\.\)]|\#+)\s*:\s*/gi, '');
+  fixed = fixed.replace(/^\d+\.\s*/gm, '');
+
+  // If AI dumped multiple reviews, keep only the first one
+  if (fixed.includes('2.') || fixed.toLowerCase().includes('title:')) {
+    const parts = fixed.split(/(?=\b\d+\.|\bTitle:|\bReview:)/i);
+    if (parts.length > 0 && parts[0].trim().length > 20) {
+      fixed = parts[0].trim();
+    }
+  }
+
+  // 2. Strip quotes, markdown, bullet artifacts
   fixed = fixed
     .replace(/^["']|["']$/g, '')
     .replace(/\*\*/g, '')
     .replace(/\*/g, '')
     .replace(/#{1,6}\s/g, '')
-    .replace(/^\d+\.\s/gm, '')
     .replace(/^[-•]\s/gm, '')
     .replace(/\n+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
+  // 3. Remove inline survey rating artifacts like "(Acceptable)", "(Good)", "(Just right)"
+  fixed = fixed.replace(/\((Acceptable\vert{}Good\vert{}Okay\vert{}Unlikely\vert{}Just right\vert{}Very good\vert{}Bad)\)/gi, '');
+
+  // 4. Strip clunky openings if present
   if (fixed.toLowerCase().startsWith('i visited')) {
     const spaceIndex = fixed.indexOf(' ', 10);
     if (spaceIndex !== -1) {
@@ -180,6 +199,7 @@ function fixReview(review: string): string {
     }
   }
 
+  // 5. Ensure it ends properly at the last complete sentence
   const lastPunct = Math.max(
     fixed.lastIndexOf('.'),
     fixed.lastIndexOf('!'),
