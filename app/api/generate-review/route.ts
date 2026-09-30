@@ -20,11 +20,47 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
   }
 }
 
-// Officially supported Groq models (No deprecated legacy models)
-const GROQ_MODELS = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
-];
+// Dynamically fetch available models directly from Groq API
+async function getActiveGroqModels(apiKey: string): Promise<string[]> {
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch models: HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    const models: string[] = (data.data || [])
+      .map((m: { id: string }) => m.id)
+      .filter((id: string) => !id.includes('whisper') && !id.includes('vision') && !id.includes('safetensors'));
+
+    // Preferred priority models
+    const priorityOrder = [
+      'llama-3.3-70b-versatile',
+      'llama-3.1-70b-versatile',
+      'llama-3.1-8b-instant',
+      'llama3-70b-8192',
+      'llama3-8b-8192',
+      'gemma2-9b-it',
+    ];
+
+    const sortedModels = models.sort((a, b) => {
+      const idxA = priorityOrder.indexOf(a);
+      const idxB = priorityOrder.indexOf(b);
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      return 0;
+    });
+
+    return sortedModels.length > 0 ? sortedModels : ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+  } catch (err: any) {
+    console.warn('Could not fetch active models dynamically from Groq, using defaults:', err.message);
+    return ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+  }
+}
 
 function buildPrompt(
   businessName: string,
@@ -61,12 +97,13 @@ async function generateWithGroq(
   prompt: string,
   apiKey: string
 ): Promise<string> {
+  const availableModels = await getActiveGroqModels(apiKey);
   let lastError: Error | null = null;
 
-  for (const model of GROQ_MODELS) {
+  for (const model of availableModels) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout per request
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
 
       const response = await fetch(
         'https://api.groq.com/openai/v1/chat/completions',
@@ -118,7 +155,7 @@ async function generateWithGroq(
     }
   }
 
-  throw lastError || new Error('All AI models failed to generate response. Check GROQ_API_KEY.');
+  throw lastError || new Error('All AI models failed to generate response. Please check GROQ_API_KEY.');
 }
 
 function fixReview(review: string): string {
