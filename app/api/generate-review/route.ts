@@ -22,10 +22,21 @@ type Params = {
 
 const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
+// Dynamic opening variations to prevent repetitive "went to..." starters
+const OPENING_STYLES = [
+  'Direct item focus (e.g., jump straight into talking about the specific item, service, or feature mentioned).',
+  'Overall experience focus (e.g., state a general feeling about the place before talking about details).',
+  'Service or staff first (e.g., mention how smooth, quick, or helpful everything was right away).',
+  'Casual recommendation style (e.g., start with a natural reaction to the visit).',
+  'Context-first style (e.g., mention stopping by or ordering without using repetitive phrases).',
+  'Direct complement/verdict style (e.g., lead with a positive or neutral observation straight away).',
+];
+
 const STRUCTURES = [
-  'Open with the context or specific mentioned item, note the service/place quality strictly from facts, and finish naturally.',
-  'Open with the overall takeaway based on customer feedback, mention staff or speed if provided, end with a natural verdict.',
-  'Flow directly from the customer facts into a clean, phone-typed review.',
+  'Lead with the specific item/service mentioned, follow up with staff/speed quality, finish with a quick natural verdict.',
+  'Lead with an overall honest impression, dive into the actual details provided, end with a casual conclusion.',
+  'Jump straight into what stood out from the facts, then mention the customer experience naturally.',
+  'Keep it ultra-direct: short reaction first, specific customer detail second, final casual thought at the end.',
 ];
 
 /**
@@ -35,13 +46,10 @@ function getLengthFromFeedback(synthesizedContext: string) {
   const wordCount = synthesizedContext.split(/\s+/).filter(Boolean).length;
 
   if (wordCount < 15) {
-    // Thin feedback: keep it short and sweet, no artificial padding
     return { words: '20 to 35', sentences: '1 to 2' };
   } else if (wordCount <= 40) {
-    // Moderate feedback: standard review length
     return { words: '35 to 55', sentences: '2 to 3' };
   } else {
-    // Rich/Detailed feedback: allow full room for details
     return { words: '50 to 75', sentences: '3 to 4' };
   }
 }
@@ -128,31 +136,31 @@ const COMMON_TRUTH_DIRECTIVE = `
 STRICT TRUTH & ZERO-HALLUCINATION RULES (HIGHEST PRIORITY):
 - You MUST write the review strictly using ONLY the provided facts below.
 - NEVER INVENT OR NAME dishes, menu items, drinks, services, staff names, or prices that are NOT explicitly mentioned in the customer facts.
-- Match sentiment strictly to customer feedback: if customer feedback is positive, make review warm and positive; if negative or mixed, reflect exact sentiment.
-- If customer input does not name a specific dish or item, write about "the food", "the order", or "the service" generally. DO NOT guess or insert random food names like "paneer pizza", "cold coffee", "garlic bread", or "pasta".
-- DO NOT add fake negative points or extra complaints unless customer explicitly mentioned them.
-- Match length strictly to feedback depth: do not invent extra details to make short input longer.
+- Match sentiment strictly to customer feedback: if positive, keep it warm and happy; if mixed/negative, reflect exact notes.
+- If customer input does not name a specific dish or item, write about "the food", "the order", or "the service" generally. DO NOT guess food names.
+- DO NOT add fake negative points or extra complaints unless explicitly mentioned.
 `;
 
-const VOCABULARY_AND_TONE_RULES = `
-VOCABULARY & EASY ENGLISH (GEN-Z / DAILY CASUAL VOICE):
-- Use simple, trendy, natural daily English that real people text on their phones.
-- Keep English simple and easy to read. DO NOT use big dictionary/academic words or formal English.
+const DIVERSITY_AND_OPENING_RULES = `
+OPENING VARIATION & NATURAL TEXTING VOICE:
+- FORBIDDEN OPENINGS: NEVER start sentences with "Went to...", "I went to...", "Visited...", "Had a visit to...", "I visited...". Vary the beginning completely!
+- Make every review feel unique and freshly typed from a phone by an actual customer.
+- Use simple, casual everyday English.
 - FORBIDDEN HARD/FORMAL WORDS: "scrumptious", "devoured", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "top-notch", "culinary", "testament", "delightful", "impeccable", "exemplary", "commendable", "pristine", "courteous", "promptness".
-- Keep sentences short, simple, and clean.
 `;
 
 // PROMPT A: CAFE & RESTAURANT PROMPT
 function buildCafeRestaurantPrompt(p: Params): string {
   const len = getLengthFromFeedback(p.synthesizedContext);
   const structure = pick(STRUCTURES);
+  const openingStyle = pick(OPENING_STYLES);
 
   const seo = [
     p.area ? `Area: ${p.area}` : null,
     p.keywords?.length ? `Items explicitly mentioned: ${p.keywords.join(', ')}` : null,
   ].filter(Boolean).join('\n');
 
-  return `You are turning a customer's real feedback into a short, natural Google review for a Cafe / Restaurant.
+  return `You are turning a customer's real feedback into a unique, realistic Google review for a Cafe / Restaurant.
 
 BUSINESS: ${p.businessName} (${p.businessType})
 ${seo}
@@ -162,10 +170,11 @@ ${p.synthesizedContext}
 
 ${COMMON_TRUTH_DIRECTIVE}
 
-${VOCABULARY_AND_TONE_RULES}
+${DIVERSITY_AND_OPENING_RULES}
 
+OPENING STYLE FOR THIS REVIEW: ${openingStyle}
 STRUCTURE: ${structure}
-LENGTH: Target ${len.sentences} sentences (${len.words} words total) based on the customer's provided feedback detail.
+LENGTH: Target ${len.sentences} sentences (${len.words} words total).
 
 FORMAT RULES:
 - Output ONE single plain paragraph.
@@ -179,13 +188,14 @@ Output ONLY the final review paragraph.`;
 function buildClinicPrompt(p: Params): string {
   const len = getLengthFromFeedback(p.synthesizedContext);
   const structure = pick(STRUCTURES);
+  const openingStyle = pick(OPENING_STYLES);
 
   const seo = [
     p.area ? `Area: ${p.area}` : null,
     p.keywords?.length ? `Treatments explicitly mentioned: ${p.keywords.join(', ')}` : null,
   ].filter(Boolean).join('\n');
 
-  return `You are turning a patient's real feedback into a short, natural Google review for a Clinic / Healthcare center.
+  return `You are turning a patient's real feedback into a unique, realistic Google review for a Clinic / Healthcare center.
 
 BUSINESS: ${p.businessName} (${p.businessType})
 ${seo}
@@ -195,14 +205,15 @@ ${p.synthesizedContext}
 
 ${COMMON_TRUTH_DIRECTIVE}
 
-${VOCABULARY_AND_TONE_RULES}
+${DIVERSITY_AND_OPENING_RULES}
 
 HEALTHCARE SPECIFIC RULES:
 - Focus on doctor demeanor, wait time, or hygiene ONLY if stated in the facts.
 - NEVER use food words like "tasty", "delicious", or "food".
 
+OPENING STYLE FOR THIS REVIEW: ${openingStyle}
 STRUCTURE: ${structure}
-LENGTH: Target ${len.sentences} sentences (${len.words} words total) based on the patient's provided feedback detail.
+LENGTH: Target ${len.sentences} sentences (${len.words} words total).
 
 FORMAT RULES:
 - Output ONE single plain paragraph.
@@ -215,13 +226,14 @@ Output ONLY the final review paragraph.`;
 function buildGeneralPrompt(p: Params): string {
   const len = getLengthFromFeedback(p.synthesizedContext);
   const structure = pick(STRUCTURES);
+  const openingStyle = pick(OPENING_STYLES);
 
   const seo = [
     p.area ? `Area: ${p.area}` : null,
     p.keywords?.length ? `Services explicitly mentioned: ${p.keywords.join(', ')}` : null,
   ].filter(Boolean).join('\n');
 
-  return `You are turning a customer's real feedback into a short, natural Google review.
+  return `You are turning a customer's real feedback into a unique, realistic Google review.
 
 BUSINESS: ${p.businessName} (${p.businessType})
 ${seo}
@@ -231,10 +243,11 @@ ${p.synthesizedContext}
 
 ${COMMON_TRUTH_DIRECTIVE}
 
-${VOCABULARY_AND_TONE_RULES}
+${DIVERSITY_AND_OPENING_RULES}
 
+OPENING STYLE FOR THIS REVIEW: ${openingStyle}
 STRUCTURE: ${structure}
-LENGTH: Target ${len.sentences} sentences (${len.words} words total) based on the customer's provided feedback detail.
+LENGTH: Target ${len.sentences} sentences (${len.words} words total).
 
 FORMAT RULES:
 - Output ONE single plain paragraph.
@@ -289,14 +302,14 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You generate simple, realistic Google Maps reviews written on a phone. Strictly adhere to provided facts and never invent dishes or extra details not given in the input. Use easy, natural language.',
+                  'You generate simple, realistic Google Maps reviews written on a phone. Never start reviews with "went to" or "visited". Ensure every review starts differently. Strictly adhere to facts.',
               },
               {
                 role: 'user',
                 content: prompt,
               },
             ],
-            temperature: 0.7,
+            temperature: 0.85, // Slightly higher to encourage opening sentence variation
             top_p: 0.9,
             max_tokens: 300,
           }),
@@ -330,6 +343,11 @@ async function generateWithGroq(
 
 function fixReview(review: string): string {
   let fixed = review.trim();
+
+  // Strip common repetitive opening starters if LLM accidentally outputs them
+  fixed = fixed.replace(/^(I went to|Went to|I visited|Visited|Had a visit to)\s+/gi, '');
+  // Capitalize the new first character if stripped
+  fixed = fixed.charAt(0).toUpperCase() + fixed.slice(1);
 
   // Strip headlines/titles matching "Title at BusinessName"
   fixed = fixed.replace(/^([^.\n!?]+(?:at|@)[^.\n!?]+[\n\r:]+)/gi, '');
