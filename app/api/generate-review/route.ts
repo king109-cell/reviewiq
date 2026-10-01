@@ -7,18 +7,6 @@ type AnswerItem = {
   type?: 'mcq' | 'text' | string;
 };
 
-type PromptParams = {
-  businessName: string;
-  businessType: string;
-  synthesizedContext: string;
-  starRating: number;
-  language: string;
-  area?: string;
-  keywords?: string[];
-};
-
-const MAX_REVIEWS_PER_HOUR = 60;
-
 // Rate limiting using Supabase DB count (serverless safe)
 async function checkDbRateLimit(businessId: string): Promise<boolean> {
   try {
@@ -32,43 +20,32 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
       .gte('created_at', oneHourAgo);
 
     if (error || count === null) return true; // Fail open if DB query issues arise
-    return count < MAX_REVIEWS_PER_HOUR;
+    return count < 60; // Max 25 generated reviews per hour per business
   } catch {
     return true;
   }
 }
 
-// 1. CONTEXT SYNTHESIZER
-// Text answers are the customer's own words (top priority).
-// Everything else is a list of selected choices.
+// 1. CONTEXT SYNTHESIZER: Translates up to 5 custom MCQs / Free-Text fields into natural context facts
 function synthesizeAnswers(answers: AnswerItem[]): string {
   return answers
-    .map((item) => {
+    .map((item, index) => {
       const q = item.question.trim();
       const a = item.answer.trim();
+
       if (!a) return null;
 
-      if (item.type === 'text') {
-        return `Customer's own words (highest priority, keep their phrasing): ${a}`;
+      // Identify if response is custom text or MCQ choice
+      const isTextAnswer = item.type === 'text' || a.length > 25 || a.includes(' ');
+
+      if (isTextAnswer) {
+        return `[Fact ${index + 1}] Regarding "${q}": The customer specifically noted: "${a}"`;
+      } else {
+        return `[Fact ${index + 1}] Question: "${q}" -> Selected Choice: "${a}"`;
       }
-      return `${q}: ${a}`;
     })
     .filter(Boolean)
     .join('\n');
-}
-
-// Pull what the customer ordered from the answers (used as SEO keywords).
-// Safe because it comes straight from the customer, nothing is invented.
-function extractOrderedItems(answers: AnswerItem[]): string[] {
-  const orderAnswer = answers.find(
-    (a) => a.type !== 'text' && /order|eat|drink/i.test(a.question)
-  );
-  if (!orderAnswer) return [];
-  return orderAnswer.answer
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 1 && s.length < 40)
-    .slice(0, 4);
 }
 
 // Dynamically fetch available Groq models with fallback priority ordering
@@ -110,85 +87,65 @@ async function getActiveGroqModels(apiKey: string): Promise<string[]> {
   }
 }
 
-// 2. PROMPT BUILDER (randomized structure + length, truth rules, safe SEO)
-const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+// 2. PROMPT BUILDER: Enforces 3-Step Narrative Structure (Anchor -> Experience -> Closing)
+function buildPrompt(
+  businessName: string,
+  businessType: string,
+  synthesizedContext: string,
+  starRating: number,
+  language: string
+): string {
+  // Match tone strictly to star ratings
+  let toneGuidance = 'Tone: Casual, genuine, and balanced.';
+  if (starRating >= 4) {
+    toneGuidance = 'Tone: Satisfied, positive, and enthusiastic casual recommendation.';
+  } else if (starRating <= 2) {
+    toneGuidance = 'Tone: Direct, honest, and critical. Speak bluntly about what went wrong.';
+  } else {
+    toneGuidance = 'Tone: Honest and mixed experience, noting both good and weak points.';
+  }
 
-const STRUCTURES = [
-  'Open with the specific item or moment, then one line about service, then a short closing thought.',
-  'Open with who they came with, then the main item, then how it ended up.',
-  'Open with a service or place detail, then the food or drink, then a short verdict.',
-  'Write it as one flowing sentence with a short follow-up sentence.',
-  'Open with the strongest opinion in plain words, then back it up with one concrete detail.',
-];
+  return `You are a real customer writing a quick, authentic Google Maps review on a mobile phone for "${businessName}" (${businessType}).
 
-const LENGTHS = [
-  { words: '35 to 50', sentences: '2 to 3' },
-  { words: '45 to 65', sentences: '3 to 4' },
-  { words: '55 to 75', sentences: '3 to 4' },
-];
+CUSTOMER VISIT FACTS:
+${synthesizedContext}
 
-function toneFor(r: number): string {
-  if (r >= 5) return 'Happy and genuine. Specific praise, not gushing. No exaggeration.';
-  if (r === 4) return 'Positive, with one small honest caveat if the facts include one.';
-  if (r === 3) return 'Balanced and fair. Name one thing that worked and one that did not.';
-  return 'Calm, direct, factual. Say exactly what went wrong, with no insults, no accusations, and no claims beyond the stated facts.';
+${toneGuidance}
+
+MANDATORY 3-STEP NARRATIVE STRUCTURE:
+You MUST follow this exact narrative order to write the review:
+- STEP 1 (THE ANCHOR): Start immediately with the main dish, item ordered, or primary specific note provided by the customer. Make this sentence concrete with specific details.
+- STEP 2 (THE EXPERIENCE): Mention the staff speed, service quality, or cleanliness in 1 concise sentence.
+- STEP 3 (THE CLOSING SENTIMENT): End with a natural recommendation or concluding thought (e.g., "Will definitely come back", "Worth stopping by", or "Needs improvement").
+
+STRICT RULES & CONSTRAINTS:
+1. FAITHFUL DATA BLENDING:
+   - Blend all provided facts across the 3 steps smoothly.
+   - NEVER quote question names or labels verbatim (e.g., NEVER write 'Question 1:' or 'Regarding Food: Good'). Translate facts into natural spoken language.
+   - Give high priority to any custom text notes or specific items mentioned by the user.
+
+2. ZERO TITLES & STRICT FORMATTING:
+   - NO HEADLINES OR TITLES: Do NOT start with titles (e.g., NO "Great Food!", "Honest Review:").
+   - NO EMOJIS, NO HASHTAGS, NO BULLET POINTS, NO QUOTATION MARKS.
+   - Start directly with Sentence #1.
+
+3. HUMAN SMARTPHONE VOICE:
+   - Write like a real person typing quickly on a phone keyboard.
+   - FORBIDDEN FORMAL/CLICHÉ PHRASES: "purchased for a casual bite", "lacked friendliness", "disappointing experience", "scrumptious", "devoured", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "decent choice", "top-notch".
+   - DO NOT start with "I visited", "I went to", "I stopped by", or "As a customer".
+
+4. LENGTH & LANGUAGE:
+   - Exactly 4 to 7 natural sentences total (40 to 70 words max).
+   - Language: ${language || 'English'}.
+
+Output ONLY the raw final review paragraph text.`;
 }
 
-function pickLength(rating: number) {
-  const pool = rating <= 2 ? LENGTHS.slice(0, 2) : LENGTHS;
-  return pick(pool);
-}
-
-function buildPrompt(p: PromptParams): string {
-  const len = pickLength(p.starRating);
-  const structure = pick(STRUCTURES);
-
-  const seo = [
-    p.area ? `Area: ${p.area}` : null,
-    p.keywords?.length
-      ? `Items the customer actually mentioned: ${p.keywords.join(', ')}`
-      : null,
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-  return `You are turning a real customer's feedback into a short Google Maps review in their own voice. They will read and edit it before posting.
-
-BUSINESS: ${p.businessName} (${p.businessType})
-${seo}
-
-WHAT THE CUSTOMER ACTUALLY SAID (the only source of truth):
-${p.synthesizedContext}
-
-RATING: ${p.starRating}/5
-TONE: ${toneFor(p.starRating)}
-
-TRUTH RULES (highest priority)
-- Use ONLY facts from the customer's input. Never invent dishes, prices, staff names, wait times, occasions, or companions.
-- If the input is thin, write a shorter review. Do not pad with made-up detail.
-- If any selected fact conflicts with the star rating, follow the star rating for the overall tone and mention the conflicting fact only briefly as a small side note.
-- If the customer's own words are given, use their phrasing and keep it close to how they wrote it.
-
-STRUCTURE FOR THIS REVIEW: ${structure}
-LENGTH: ${len.sentences} sentences, ${len.words} words.
-
-SEO (natural only)
-- Mention the business name at most once, and only if it fits naturally. Mention the area at most once.
-- Include a specific item from the input if one exists.
-- Never write phrases like "best cafe in [city]". No keyword lists. No repetition.
-
-VOICE
-- Sound like a real person typing on a phone: plain words, mild imperfection, contractions, uneven sentence lengths.
-- Language: ${p.language || 'English'}. If it is Hindi or Gujarati, match how locals actually text (Latin script or mixed with English is fine if natural).
-- Do not start with "I visited", "I went to", "I stopped by", or "As a customer".
-- Forbidden words and phrases: scrumptious, devoured, unwind, exceeded expectations, nonetheless, overall, ambiance, spotless, top-notch, decent choice, hidden gem, must-visit, culinary journey, elevated, delightful, "a testament to", "highly recommend" (use at most a casual variant like "worth trying").
-- No titles, emojis, hashtags, bullets, quotation marks, or em dashes. Never quote question labels.
-
-Output ONLY the review text.`;
-}
-
-// 3. GROQ AI GENERATOR
-async function generateWithGroq(prompt: string, apiKey: string): Promise<string> {
+// 3. GROQ AI GENERATOR: Uses temperature 0.85 & top_p 0.9 for creative, natural phrasing
+async function generateWithGroq(
+  prompt: string,
+  apiKey: string
+): Promise<string> {
   const availableModels = await getActiveGroqModels(apiKey);
   let lastError: Error | null = null;
 
@@ -197,28 +154,34 @@ async function generateWithGroq(prompt: string, apiKey: string): Promise<string>
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content:
-                'You write short, natural Google Maps reviews in a real customer\'s voice, based only on the facts given. You never output titles, headlines, emojis, corporate buzzwords, or formal phrasing. Output ONLY the raw review text.',
-            },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.9,
-          top_p: 0.92,
-          max_tokens: 300, // Hindi/Gujarati use more tokens per word
-        }),
-      });
+      const response = await fetch(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You generate ultra-realistic, simple Google Maps reviews written on a smartphone. You never output titles, headlines, emojis, corporate buzzwords, or formal phrasing. Output ONLY raw review sentences.',
+              },
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+            temperature: 0.85,
+            top_p: 0.9,
+            max_tokens: 160,
+          }),
+        }
+      );
 
       clearTimeout(timeoutId);
 
@@ -245,24 +208,22 @@ async function generateWithGroq(prompt: string, apiKey: string): Promise<string>
   throw lastError || new Error('All AI models failed to generate response. Please check GROQ_API_KEY.');
 }
 
-// 4. SANITIZER
+// 4. SANITIZER: Cleans headers, quotes, emojis, and lingering artifacts
 function fixReview(review: string): string {
   let fixed = review.trim();
 
-  // Strip headline lines like "Great spot at Cafe Name:"
+  // 1. Strip headlines/titles matching "Title at BusinessName" or "Adjective Noun at..."
   fixed = fixed.replace(/^([^.\n!?]+(?:at|@)[^.\n!?]+[\n\r:]+)/gi, '');
+  fixed = fixed.replace(/^[A-Z0-9\s,–—\-]+(?:at|@)\s+[A-Z0-9\s]+(?:\n|\r|:)\s*/gi, '');
 
-  // Remove label prefixes (e.g. "Title:", "Review:")
+  // 2. Remove common title/label prefixes (e.g. "Title:", "Review:", "1.")
   fixed = fixed.replace(/^(Title|Review|Option|\d+[\.\)]|\#+)\s*:\s*/gi, '');
   fixed = fixed.replace(/^\d+\.\s*/gm, '');
 
-  // Strip emojis only (keeps the rupee sign, apostrophes, Hindi and Gujarati text)
-  fixed = fixed.replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '');
+  // 3. Strip all emojis and non-standard unicode symbols
+  fixed = fixed.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '');
 
-  // Em and en dashes become a comma, never glue words together
-  fixed = fixed.replace(/\s*[—–]\s*/g, ', ');
-
-  // Markdown, surrounding quotes, extra spaces
+  // 4. Strip markdown formatting, surrounding quotes, and redundant spaces
   fixed = fixed
     .replace(/^["'«“]|["'»”]$/g, '')
     .replace(/\*\*/g, '')
@@ -273,20 +234,20 @@ function fixReview(review: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Remove repetitive location descriptors
+  // 5. Filter out repetitive location/country descriptors
   fixed = fixed
     .replace(/,\s*a\s+local\s+Indian\s+restaurant/gi, '')
     .replace(/,\s*an\s+Indian\s+restaurant/gi, '')
     .replace(/\s+in\s+India\b/gi, '')
     .replace(/\s+Indian\s+spot\b/gi, ' spot');
 
-  // Cut a dangling half sentence (supports Hindi danda too)
+  // 6. Ensure proper sentence termination
   const lastPunct = Math.max(
     fixed.lastIndexOf('.'),
     fixed.lastIndexOf('!'),
-    fixed.lastIndexOf('?'),
-    fixed.lastIndexOf('।')
+    fixed.lastIndexOf('?')
   );
+
   if (lastPunct > 20 && lastPunct < fixed.length - 1) {
     fixed = fixed.substring(0, lastPunct + 1);
   }
@@ -304,28 +265,35 @@ export async function POST(req: NextRequest) {
       language = 'English',
       answers,
       starRating,
-      area,       // optional, e.g. "Satellite"
-      keywords,   // optional, string[] set by the owner
     } = body;
 
     if (!businessName || !businessType || !answers || !businessId) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      );
     }
 
     if (!process.env.GROQ_API_KEY) {
-      return NextResponse.json({ error: 'AI service missing configuration key' }, { status: 500 });
+      return NextResponse.json(
+        { error: 'AI service missing configuration key' },
+        { status: 500 }
+      );
     }
 
-    const rating = Math.min(5, Math.max(1, Number(starRating) || 5));
-
+    // Filter valid customer answers
     const validAnswers: AnswerItem[] = Array.isArray(answers)
       ? answers.filter((qa: AnswerItem) => qa.answer && qa.answer.trim().length > 0)
       : [];
 
     if (validAnswers.length === 0) {
-      return NextResponse.json({ error: 'Please provide at least one answer.' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Please provide at least one answer.' },
+        { status: 400 }
+      );
     }
 
+    // Serverless-safe rate limiting using DB count
     const isAllowed = await checkDbRateLimit(businessId);
     if (!isAllowed) {
       return NextResponse.json(
@@ -334,23 +302,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Synthesize raw QA pairs into rich conversational context
     const synthesizedContext = synthesizeAnswers(validAnswers);
 
-    // Owner keywords first, otherwise use what the customer said they ordered
-    const ownerKeywords: string[] = Array.isArray(keywords)
-      ? keywords.filter((k: unknown) => typeof k === 'string').slice(0, 4)
-      : [];
-    const finalKeywords = ownerKeywords.length ? ownerKeywords : extractOrderedItems(validAnswers);
-
-    const prompt = buildPrompt({
+    const prompt = buildPrompt(
       businessName,
       businessType,
       synthesizedContext,
-      starRating: rating,
-      language,
-      area: typeof area === 'string' && area.trim() ? area.trim() : undefined,
-      keywords: finalKeywords,
-    });
+      starRating,
+      language
+    );
 
     const raw = await generateWithGroq(prompt, process.env.GROQ_API_KEY);
     const review = fixReview(raw);
@@ -362,6 +323,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Insert session into Supabase async
     const supabase = createSupabaseAdmin();
     const { data: session } = await supabase
       .from('review_sessions')
@@ -370,7 +332,7 @@ export async function POST(req: NextRequest) {
         language,
         answers: validAnswers,
         generated_review: review,
-        star_rating: rating,
+        star_rating: starRating,
         posted: false,
       })
       .select('id')
