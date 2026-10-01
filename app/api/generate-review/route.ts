@@ -11,7 +11,6 @@ type Params = {
   businessName: string;
   businessType: string;
   synthesizedContext: string;
-  starRating: number;
   language: string;
   area?: string;
   keywords?: string[];
@@ -24,34 +23,29 @@ type Params = {
 const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
 const STRUCTURES = [
-  'Open with context (when or who went), mention a specific item with a sensory detail, note a service/place aspect, end naturally.',
-  'Open with the specific item/moment and a sensory detail, mention staff behavior or wait time, finish with return intent.',
-  'Open with the strongest opinion about the service or place, back it up with a specific item detail, end with a grounded verdict.',
-  'Write a flowing sentence linking context and specific item details, followed by a short line about service and a natural close.',
+  'Open with the context or specific mentioned item, note the service/place quality strictly from facts, and finish naturally.',
+  'Open with the overall takeaway based on customer feedback, mention staff or speed if provided, end with a natural verdict.',
+  'Flow directly from the customer facts into a clean, phone-typed review.',
 ];
 
-// Target lengths: 35 to 60 words for low ratings (1-2 stars), 40 to 75 words for higher ratings (3-5 stars)
-function r_len(rating: number) {
-  if (rating <= 2) {
-    return { words: '35 to 60', sentences: '2 to 3' };
+/**
+ * Calculates review length based on the depth/volume of the customer's answers.
+ */
+function getLengthFromFeedback(synthesizedContext: string) {
+  const wordCount = synthesizedContext.split(/\s+/).filter(Boolean).length;
+
+  if (wordCount < 15) {
+    // Thin feedback: keep it short and sweet, no artificial padding
+    return { words: '20 to 35', sentences: '1 to 2' };
+  } else if (wordCount <= 40) {
+    // Moderate feedback: standard review length
+    return { words: '35 to 55', sentences: '2 to 3' };
+  } else {
+    // Rich/Detailed feedback: allow full room for details
+    return { words: '50 to 75', sentences: '3 to 4' };
   }
-  
-  const higherRatingPool = [
-    { words: '40 to 60', sentences: '2 to 3' },
-    { words: '50 to 75', sentences: '3 to 4' },
-    { words: '45 to 70', sentences: '3 to 4' },
-  ];
-  return pick(higherRatingPool);
 }
 
-function toneFor(r: number): string {
-  if (r === 5) return 'Warm and specific, not gushing or over-enthusiastic.';
-  if (r === 4) return 'Positive with one small honest caveat to keep it believable.';
-  if (r === 3) return 'Balanced and fair: name one good point and one weak point.';
-  return 'Factual, calm, and direct. Describe exactly what happened with no accusations, exaggeration, or insults.';
-}
-
-// Rate limiting using Supabase DB count (serverless safe)
 async function checkDbRateLimit(businessId: string): Promise<boolean> {
   try {
     const supabase = createSupabaseAdmin();
@@ -81,9 +75,9 @@ function synthesizeAnswers(answers: AnswerItem[]): string {
       const isTextAnswer = item.type === 'text' || a.length > 25 || a.includes(' ');
 
       if (isTextAnswer) {
-        return `[Fact ${index + 1}] Regarding "${q}": The customer noted: "${a}"`;
+        return `[Fact ${index + 1}] Customer Note: "${a}" (Question: "${q}")`;
       } else {
-        return `[Fact ${index + 1}] Question: "${q}" -> Selected Choice: "${a}"`;
+        return `[Fact ${index + 1}] Selected Choice: "${a}" for "${q}"`;
       }
     })
     .filter(Boolean)
@@ -130,154 +124,123 @@ async function getActiveGroqModels(apiKey: string): Promise<string[]> {
 // 2. ISOLATED PROMPT BUILDERS BY BUSINESS CATEGORY
 // ============================================================================
 
+const COMMON_TRUTH_DIRECTIVE = `
+STRICT TRUTH & ZERO-HALLUCINATION RULES (HIGHEST PRIORITY):
+- You MUST write the review strictly using ONLY the provided facts below.
+- NEVER INVENT OR NAME dishes, menu items, drinks, services, staff names, or prices that are NOT explicitly mentioned in the customer facts.
+- Match sentiment strictly to customer feedback: if customer feedback is positive, make review warm and positive; if negative or mixed, reflect exact sentiment.
+- If customer input does not name a specific dish or item, write about "the food", "the order", or "the service" generally. DO NOT guess or insert random food names like "paneer pizza", "cold coffee", "garlic bread", or "pasta".
+- DO NOT add fake negative points or extra complaints unless customer explicitly mentioned them.
+- Match length strictly to feedback depth: do not invent extra details to make short input longer.
+`;
+
+const VOCABULARY_AND_TONE_RULES = `
+VOCABULARY & EASY ENGLISH (GEN-Z / DAILY CASUAL VOICE):
+- Use simple, trendy, natural daily English that real people text on their phones.
+- Keep English simple and easy to read. DO NOT use big dictionary/academic words or formal English.
+- FORBIDDEN HARD/FORMAL WORDS: "scrumptious", "devoured", "unwind", "exceeded expectations", "nonetheless", "overall", "ambiance", "spotless", "top-notch", "culinary", "testament", "delightful", "impeccable", "exemplary", "commendable", "pristine", "courteous", "promptness".
+- Keep sentences short, simple, and clean.
+`;
+
 // PROMPT A: CAFE & RESTAURANT PROMPT
 function buildCafeRestaurantPrompt(p: Params): string {
-  const len = r_len(p.starRating);
+  const len = getLengthFromFeedback(p.synthesizedContext);
   const structure = pick(STRUCTURES);
 
   const seo = [
-    p.area ? `Area/Neighborhood: ${p.area}` : null,
-    p.keywords?.length ? `Dishes/items actually mentioned: ${p.keywords.join(', ')}` : null,
+    p.area ? `Area: ${p.area}` : null,
+    p.keywords?.length ? `Items explicitly mentioned: ${p.keywords.join(', ')}` : null,
   ].filter(Boolean).join('\n');
 
-  return `You are turning a real customer's feedback into a short Google Maps review in their own voice.
+  return `You are turning a customer's real feedback into a short, natural Google review for a Cafe / Restaurant.
 
 BUSINESS: ${p.businessName} (${p.businessType})
 ${seo}
 
-WHAT THE CUSTOMER ACTUALLY SAID (the only source of truth):
+CUSTOMER FACTS (YOUR ONLY SOURCE OF TRUTH):
 ${p.synthesizedContext}
 
-RATING: ${p.starRating}/5
-TONE: ${toneFor(p.starRating)}
+${COMMON_TRUTH_DIRECTIVE}
 
-TRUTH RULES (highest priority)
-- Use ONLY facts from the customer's input. Never invent dishes, prices, staff names, wait times, occasions, or companions.
-- If the input is thin, keep it brief and natural. Do not pad with made-up detail.
-- Never contradict the rating or any stated complaint.
-
-KEY ELEMENTS TO INCLUDE (Prioritize in order if facts exist in customer input):
-1. Specific Item/Moment: e.g. "butter garlic naan" rather than "the food".
-2. Sensory or Concrete Detail: e.g. piping hot, long wait, crisp, table by the window.
-3. Service or Place Detail: wait time, staff behavior, parking, hygiene.
-4. Context: when or who they went with (e.g. Sunday dinner, after work, with family).
-5. Natural Close: return intent or grounded conclusion in the customer's voice.
+${VOCABULARY_AND_TONE_RULES}
 
 STRUCTURE: ${structure}
-LENGTH: Exactly ${len.sentences} sentences (${len.words} words total).
+LENGTH: Target ${len.sentences} sentences (${len.words} words total) based on the customer's provided feedback detail.
 
-SEO & FORMAT RULES:
-- Format: Exactly ONE plain paragraph.
-- NO titles, headlines, emojis, hashtags, bullets, quotation marks, or em dashes.
-- Safe SEO: Mention the business name at most once (only if natural). Include specific dishes or the area naturally.
-- FORBIDDEN SEO PATTERNS: Never use phrases like "best cafe in [city]", keyword lists, or repetitive city-plus-keyword strings.
+FORMAT RULES:
+- Output ONE single plain paragraph.
+- NO titles, headlines, emojis, hashtags, bullets, quotes, or em dashes.
+- Mention business name at most once naturally. NEVER use fake spam like "best cafe in [city]".
 
-VOICE:
-- Sound like a real person typing on a phone: plain words, mild imperfection, contractions.
-- Language: ${p.language || 'English'}. If Hindi or Gujarati, match local texting style (Latin script or mixed).
-- Do NOT start with "I visited", "I went to", "I stopped by", or "As a customer".
-- FORBIDDEN WORDS: scrumptious, devoured, unwind, exceeded expectations, nonetheless, overall, ambiance, spotless, top-notch, decent choice, hidden gem, must-visit, culinary journey, elevated, delightful, "a testament to".
-
-Output ONLY the raw review paragraph.`;
+Output ONLY the final review paragraph.`;
 }
 
 // PROMPT B: CLINIC & HEALTHCARE PROMPT
 function buildClinicPrompt(p: Params): string {
-  const len = r_len(p.starRating);
+  const len = getLengthFromFeedback(p.synthesizedContext);
   const structure = pick(STRUCTURES);
 
   const seo = [
-    p.area ? `Area/Neighborhood: ${p.area}` : null,
-    p.keywords?.length ? `Services/treatments actually mentioned: ${p.keywords.join(', ')}` : null,
+    p.area ? `Area: ${p.area}` : null,
+    p.keywords?.length ? `Treatments explicitly mentioned: ${p.keywords.join(', ')}` : null,
   ].filter(Boolean).join('\n');
 
-  return `You are turning a real patient's feedback into a short Google Maps review in their own voice.
+  return `You are turning a patient's real feedback into a short, natural Google review for a Clinic / Healthcare center.
 
 BUSINESS: ${p.businessName} (${p.businessType})
 ${seo}
 
-WHAT THE PATIENT ACTUALLY SAID (the only source of truth):
+PATIENT FACTS (YOUR ONLY SOURCE OF TRUTH):
 ${p.synthesizedContext}
 
-RATING: ${p.starRating}/5
-TONE: ${toneFor(p.starRating)}
+${COMMON_TRUTH_DIRECTIVE}
 
-TRUTH RULES (highest priority)
-- Use ONLY facts from the patient's input. Never invent treatments, doctor names, diagnoses, prices, or wait times.
-- If the input is thin, keep it brief and natural. Do not pad with made-up detail.
-- Never contradict the rating or any stated complaint.
+${VOCABULARY_AND_TONE_RULES}
 
-KEY ELEMENTS TO INCLUDE (Prioritize in order if facts exist in input):
-1. Specific Treatment/Service: exact procedure or consultation mentioned.
-2. Concrete Detail: doctor's demeanor, explanation clarity, queue management, hygiene.
-3. Context: who went or when (e.g. routine checkup, appointment last week).
-4. Natural Close: patient trust variant like "felt in good hands" or "glad to have found a good clinic".
+HEALTHCARE SPECIFIC RULES:
+- Focus on doctor demeanor, wait time, or hygiene ONLY if stated in the facts.
+- NEVER use food words like "tasty", "delicious", or "food".
 
 STRUCTURE: ${structure}
-LENGTH: Exactly ${len.sentences} sentences (${len.words} words total).
+LENGTH: Target ${len.sentences} sentences (${len.words} words total) based on the patient's provided feedback detail.
 
-SEO & FORMAT RULES:
-- Format: Exactly ONE plain paragraph.
-- NO titles, headlines, emojis, hashtags, bullets, quotation marks, or em dashes.
-- Safe SEO: Mention business name at most once. Mention area naturally if applicable.
-- FORBIDDEN: Never use dining terms ("delicious", "scrumptious", "taste") or casual dining closes ("can't wait to visit again").
+FORMAT RULES:
+- Output ONE single plain paragraph.
+- NO titles, headlines, emojis, hashtags, bullets, or quotes.
 
-VOICE:
-- Sound like a real patient typing on a phone: plain words, mild imperfection, contractions.
-- Language: ${p.language || 'English'}. If Hindi or Gujarati, match local texting style.
-- Do NOT start with "I visited", "I went to", "I stopped by", or "As a patient".
-- FORBIDDEN WORDS: exceeded expectations, nonetheless, overall, spotless, top-notch, hidden gem, "a testament to", "highly recommend".
-
-Output ONLY the raw review paragraph.`;
+Output ONLY the final review paragraph.`;
 }
 
 // PROMPT C: GENERAL BUSINESS FALLBACK PROMPT
 function buildGeneralPrompt(p: Params): string {
-  const len = r_len(p.starRating);
+  const len = getLengthFromFeedback(p.synthesizedContext);
   const structure = pick(STRUCTURES);
 
   const seo = [
-    p.area ? `Area/Neighborhood: ${p.area}` : null,
-    p.keywords?.length ? `Items/services actually mentioned: ${p.keywords.join(', ')}` : null,
+    p.area ? `Area: ${p.area}` : null,
+    p.keywords?.length ? `Services explicitly mentioned: ${p.keywords.join(', ')}` : null,
   ].filter(Boolean).join('\n');
 
-  return `You are turning a real customer's feedback into a short Google Maps review in their own voice.
+  return `You are turning a customer's real feedback into a short, natural Google review.
 
 BUSINESS: ${p.businessName} (${p.businessType})
 ${seo}
 
-WHAT THE CUSTOMER ACTUALLY SAID (the only source of truth):
+CUSTOMER FACTS (YOUR ONLY SOURCE OF TRUTH):
 ${p.synthesizedContext}
 
-RATING: ${p.starRating}/5
-TONE: ${toneFor(p.starRating)}
+${COMMON_TRUTH_DIRECTIVE}
 
-TRUTH RULES (highest priority)
-- Use ONLY facts from the customer's input. Never invent products, prices, staff names, or wait times.
-- If the input is thin, keep it brief and natural. Do not pad with made-up detail.
-- Never contradict the rating or any stated complaint.
-
-KEY ELEMENTS TO INCLUDE (Prioritize in order if facts exist in input):
-1. Specific Item or Service mentioned.
-2. Concrete Detail: quality, staff response, speed, or facility detail.
-3. Context: occasion or timing.
-4. Natural Close: grounded recommendation or return intent.
+${VOCABULARY_AND_TONE_RULES}
 
 STRUCTURE: ${structure}
-LENGTH: Exactly ${len.sentences} sentences (${len.words} words total).
+LENGTH: Target ${len.sentences} sentences (${len.words} words total) based on the customer's provided feedback detail.
 
-SEO & FORMAT RULES:
-- Format: Exactly ONE plain paragraph.
-- NO titles, headlines, emojis, hashtags, bullets, quotation marks, or em dashes.
-- Safe SEO: Mention business name at most once. No keyword lists or "best [business] in [city]" patterns.
+FORMAT RULES:
+- Output ONE single plain paragraph.
+- NO titles, headlines, emojis, hashtags, bullets, or quotes.
 
-VOICE:
-- Sound like a real person typing on a phone: plain words, mild imperfection, contractions.
-- Language: ${p.language || 'English'}.
-- Do NOT start with "I visited", "I went to", "I stopped by", or "As a customer".
-- FORBIDDEN WORDS: exceeded expectations, nonetheless, overall, spotless, top-notch, hidden gem, must-visit.
-
-Output ONLY the raw review paragraph.`;
+Output ONLY the final review paragraph.`;
 }
 
 // MASTER ROUTER FUNCTION
@@ -326,14 +289,14 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You generate realistic Google Maps reviews written on a smartphone. Output ONLY raw review sentences in a single plain paragraph. No titles, emojis, quotation marks, or formatting.',
+                  'You generate simple, realistic Google Maps reviews written on a phone. Strictly adhere to provided facts and never invent dishes or extra details not given in the input. Use easy, natural language.',
               },
               {
                 role: 'user',
                 content: prompt,
               },
             ],
-            temperature: 0.85,
+            temperature: 0.7,
             top_p: 0.9,
             max_tokens: 300,
           }),
@@ -423,7 +386,6 @@ export async function POST(req: NextRequest) {
       businessId,
       language = 'English',
       answers,
-      starRating,
       area,
       keywords,
     } = body;
@@ -467,7 +429,6 @@ export async function POST(req: NextRequest) {
       businessName,
       businessType,
       synthesizedContext,
-      starRating,
       language,
       area,
       keywords,
@@ -491,7 +452,6 @@ export async function POST(req: NextRequest) {
         language,
         answers: validAnswers,
         generated_review: review,
-        star_rating: starRating,
         posted: false,
       })
       .select('id')
