@@ -29,7 +29,7 @@ const OPENING_STYLES = [
   'Service or staff first (e.g., mention how smooth, quick, or helpful everything was right away).',
   'Casual recommendation style (e.g., start with a natural reaction to the visit).',
   'Context-first style (e.g., mention stopping by or ordering without using repetitive phrases).',
-  'Direct complement/verdict style (e.g., lead with a positive or neutral observation straight away).',
+  'Direct compliment/verdict style (e.g., lead with a positive or neutral observation straight away).',
 ];
 
 const STRUCTURES = [
@@ -72,6 +72,10 @@ async function checkDbRateLimit(businessId: string): Promise<boolean> {
   }
 }
 
+/**
+ * Transforms customer Q&A into contextual facts so the AI paraphrases 
+ * selected options into natural text rather than copying option strings verbatim.
+ */
 function synthesizeAnswers(answers: AnswerItem[]): string {
   return answers
     .map((item, index) => {
@@ -83,9 +87,9 @@ function synthesizeAnswers(answers: AnswerItem[]): string {
       const isTextAnswer = item.type === 'text' || a.length > 25 || a.includes(' ');
 
       if (isTextAnswer) {
-        return `[Fact ${index + 1}] Customer Note: "${a}" (Question: "${q}")`;
+        return `[Fact ${index + 1}] Customer Written Note: "${a}" (Topic: "${q}")`;
       } else {
-        return `[Fact ${index + 1}] Selected Choice: "${a}" for "${q}"`;
+        return `[Fact ${index + 1}] Selected Choice/Feedback: "${a}" for aspect "${q}"`;
       }
     })
     .filter(Boolean)
@@ -141,6 +145,15 @@ STRICT TRUTH & ZERO-HALLUCINATION RULES (HIGHEST PRIORITY):
 - DO NOT add fake negative points or extra complaints unless explicitly mentioned.
 `;
 
+const OPTION_PARAPHRASING_RULES = `
+NATURAL PARAPHRASING (DO NOT COPY OPTION TEXT EXACTLY):
+- DO NOT copy option choices verbatim! Convert selected options into natural, casual sentences.
+  * Example: If selected choice is "Clean and tidy", write "the place was super clean" or "really neat setup".
+  * Example: If selected choice is "Fast service", write "got our order really quickly" or "service was super fast".
+  * Example: If selected choice is "Friendly staff", write "staff members were really nice to us".
+- Never sound like a robot reading a multiple-choice menu. Make it flow like a real phone text.
+`;
+
 const DIVERSITY_AND_OPENING_RULES = `
 OPENING VARIATION & NATURAL TEXTING VOICE:
 - FORBIDDEN OPENINGS: NEVER start sentences with "Went to...", "I went to...", "Visited...", "Had a visit to...", "I visited...". Vary the beginning completely!
@@ -169,6 +182,8 @@ CUSTOMER FACTS (YOUR ONLY SOURCE OF TRUTH):
 ${p.synthesizedContext}
 
 ${COMMON_TRUTH_DIRECTIVE}
+
+${OPTION_PARAPHRASING_RULES}
 
 ${DIVERSITY_AND_OPENING_RULES}
 
@@ -204,6 +219,8 @@ PATIENT FACTS (YOUR ONLY SOURCE OF TRUTH):
 ${p.synthesizedContext}
 
 ${COMMON_TRUTH_DIRECTIVE}
+
+${OPTION_PARAPHRASING_RULES}
 
 ${DIVERSITY_AND_OPENING_RULES}
 
@@ -242,6 +259,8 @@ CUSTOMER FACTS (YOUR ONLY SOURCE OF TRUTH):
 ${p.synthesizedContext}
 
 ${COMMON_TRUTH_DIRECTIVE}
+
+${OPTION_PARAPHRASING_RULES}
 
 ${DIVERSITY_AND_OPENING_RULES}
 
@@ -302,14 +321,14 @@ async function generateWithGroq(
               {
                 role: 'system',
                 content:
-                  'You generate simple, realistic Google Maps reviews written on a phone. Never start reviews with "went to" or "visited". Ensure every review starts differently. Strictly adhere to facts.',
+                  'You generate simple, realistic Google Maps reviews written on a phone. Paraphrase option selections into natural human phrases instead of repeating exact option text. Strictly adhere to facts.',
               },
               {
                 role: 'user',
                 content: prompt,
               },
             ],
-            temperature: 0.85, // Slightly higher to encourage opening sentence variation
+            temperature: 0.85,
             top_p: 0.9,
             max_tokens: 300,
           }),
