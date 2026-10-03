@@ -23,12 +23,13 @@ export default function CustomerFlow({ business }: Props) {
   const [language, setLanguage] = useState<Lang>('english');
   const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState<QA[]>([]);
-  const [retryCount, setRetryCount] = useState(0);
-  const MAX_RETRIES = 3;
+  const [generatedReview, setGeneratedReview] = useState('');
   const [starRating, setStarRating] = useState(5);
   const [toast, setToast] = useState<string | null>(null);
   const [animating, setAnimating] = useState(false);
   const [allQuestions, setAllQuestions] = useState<Question[]>([]);
+  const [retryCount, setRetryCount] = useState(0);
+  const MAX_RETRIES = 3;
 
   const tr = t(language);
 
@@ -41,9 +42,14 @@ export default function CustomerFlow({ business }: Props) {
         text_hi: cq.text_hi || cq.text_en,
         text_gu: cq.text_gu || cq.text_en,
         input_type: cq.input_type || 'text',
-        options: cq.input_type === 'chips'
-          ? (cq.options || []).map((opt: string) => ({ en: opt, hi: opt, gu: opt }))
-          : undefined,
+        options:
+          cq.input_type === 'chips'
+            ? (cq.options || []).map((opt: string) => ({
+                en: opt,
+                hi: opt,
+                gu: opt,
+              }))
+            : undefined,
         enabled: true,
       }));
     setAllQuestions(customQs);
@@ -58,23 +64,13 @@ export default function CustomerFlow({ business }: Props) {
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibility);
   }, [screen]);
 
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3000);
-  };
-
-  const handleLanguageSelect = (lang: Lang) => {
-    setLanguage(lang);
-    setTimeout(() => {
-      setAnimating(true);
-      setTimeout(() => {
-        setScreen('questions');
-        setAnimating(false);
-      }, 300);
-    }, 150);
   };
 
   const generateReview = useCallback(
@@ -128,13 +124,13 @@ export default function CustomerFlow({ business }: Props) {
     [currentQ, answers, allQuestions, totalSteps, generateReview]
   );
 
- const handleRetry = () => {
-  if (retryCount >= MAX_RETRIES) return;
-  setRetryCount(retryCount + 1);
-  setScreen('generating');
-  setGeneratedReview('');
-  generateReview(answers, starRating);
-};
+  const handleRetry = () => {
+    if (retryCount >= MAX_RETRIES) return;
+    setRetryCount(retryCount + 1);
+    setScreen('generating');
+    setGeneratedReview('');
+    generateReview(answers, starRating);
+  };
 
   const handlePostToGoogle = async () => {
     try {
@@ -159,14 +155,15 @@ export default function CustomerFlow({ business }: Props) {
     }, 300);
   };
 
-  // No questions added yet
   if (allQuestions.length === 0 && screen === 'questions') {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
-        <p className="text-4xl mb-4">⚙️</p>
-        <p className="text-gray-500 text-sm">
-          This business has not set up any questions yet.
-        </p>
+      <div className="min-h-screen bg-green-50 flex items-center justify-center">
+        <div className="text-center px-6">
+          <p className="text-4xl mb-4">⚙️</p>
+          <p className="text-gray-500 text-sm">
+            This business has not set up any questions yet.
+          </p>
+        </div>
       </div>
     );
   }
@@ -180,7 +177,7 @@ export default function CustomerFlow({ business }: Props) {
           <ProgressBar current={currentQ + 1} total={totalSteps} />
         )}
 
-        {(screen === 'language' || screen === 'questions') && (
+        {screen === 'questions' && (
           <div className="px-6 pt-8 pb-4 flex items-center gap-3">
             {business.logo_url && (
               <img
@@ -190,20 +187,21 @@ export default function CustomerFlow({ business }: Props) {
               />
             )}
             <div>
-              <p className="font-semibold text-gray-900 text-sm">{business.name}</p>
-              <p className="text-xs text-gray-400 capitalize">{business.type}</p>
+              <p className="font-semibold text-gray-900 text-sm">
+                {business.name}
+              </p>
+              <p className="text-xs text-gray-400 capitalize">
+                {business.type}
+              </p>
             </div>
           </div>
         )}
 
-        <div className={`flex-1 flex flex-col ${animating ? 'slide-exit' : 'slide-enter'}`}>
-          {screen === 'language' && (
-            <LanguageSelect
-              businessName={business.name}
-              onSelect={handleLanguageSelect}
-            />
-          )}
-
+        <div
+          className={`flex-1 flex flex-col ${
+            animating ? 'slide-exit' : 'slide-enter'
+          }`}
+        >
           {screen === 'questions' && allQuestions[currentQ] && (
             <QuestionStep
               key={currentQ}
@@ -218,17 +216,19 @@ export default function CustomerFlow({ business }: Props) {
           )}
 
           {screen === 'review' && (
-  <ReviewReady
-    review={generatedReview}
-    language={language}
-    starRating={starRating}
-    onStarChange={setStarRating}
-    onRetry={handleRetry}
-    onPost={handlePostToGoogle}
-    overlayText={tr.paste_overlay || 'Paste into Google → Hit Post ⭐'}
-    retriesLeft={MAX_RETRIES - retryCount}
-  />
-)}
+            <ReviewReady
+              review={generatedReview}
+              language={language}
+              starRating={starRating}
+              onStarChange={setStarRating}
+              onRetry={handleRetry}
+              onPost={handlePostToGoogle}
+              overlayText={
+                tr.paste_overlay || 'Paste into Google → Hit Post ⭐'
+              }
+              retriesLeft={MAX_RETRIES - retryCount}
+            />
+          )}
 
           {screen === 'thankyou' && (
             <ThankYou language={language} businessName={business.name} />
