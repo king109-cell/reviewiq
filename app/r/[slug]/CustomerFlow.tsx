@@ -23,7 +23,8 @@ export default function CustomerFlow({ business }: Props) {
   const [language, setLanguage] = useState<Lang>('english');
   const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState<QA[]>([]);
-  const [generatedReview, setGeneratedReview] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
+  const MAX_RETRIES = 3;
   const [starRating, setStarRating] = useState(5);
   const [toast, setToast] = useState<string | null>(null);
   const [animating, setAnimating] = useState(false);
@@ -127,11 +128,13 @@ export default function CustomerFlow({ business }: Props) {
     [currentQ, answers, allQuestions, totalSteps, generateReview]
   );
 
-  const handleRetry = () => {
-    setScreen('generating');
-    setGeneratedReview('');
-    generateReview(answers, starRating);
-  };
+ const handleRetry = () => {
+  if (retryCount >= MAX_RETRIES) return;
+  setRetryCount(retryCount + 1);
+  setScreen('generating');
+  setGeneratedReview('');
+  generateReview(answers, starRating);
+};
 
   const handlePostToGoogle = async () => {
     try {
@@ -215,16 +218,17 @@ export default function CustomerFlow({ business }: Props) {
           )}
 
           {screen === 'review' && (
-            <ReviewReady
-              review={generatedReview}
-              language={language}
-              starRating={starRating}
-              onStarChange={setStarRating}
-              onRetry={handleRetry}
-              onPost={handlePostToGoogle}
-              overlayText={tr.paste_overlay || 'Paste into Google → Hit Post ⭐'}
-            />
-          )}
+  <ReviewReady
+    review={generatedReview}
+    language={language}
+    starRating={starRating}
+    onStarChange={setStarRating}
+    onRetry={handleRetry}
+    onPost={handlePostToGoogle}
+    overlayText={tr.paste_overlay || 'Paste into Google → Hit Post ⭐'}
+    retriesLeft={MAX_RETRIES - retryCount}
+  />
+)}
 
           {screen === 'thankyou' && (
             <ThankYou language={language} businessName={business.name} />

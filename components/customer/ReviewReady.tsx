@@ -11,8 +11,8 @@ interface Props {
   onRetry: () => void;
   onPost: () => void;
   overlayText: string;
+  retriesLeft: number;
 }
-
 export default function ReviewReady({
   review,
   language,
@@ -21,6 +21,7 @@ export default function ReviewReady({
   onRetry,
   onPost,
   overlayText,
+  retriesLeft,
 }: Props) {
   const tr = t(language);
   const [editing, setEditing] = useState(false);
@@ -78,12 +79,17 @@ export default function ReviewReady({
         >
           {editing ? '✓ Done' : tr.edit}
         </button>
-        <button
-          onClick={onRetry}
-          className="flex-1 h-12 border-2 border-gray-200 rounded-2xl text-sm font-medium text-gray-600 hover:border-green-400 transition-colors"
-        >
-          {tr.try_again}
-        </button>
+       <button
+  onClick={onRetry}
+  disabled={retriesLeft <= 0}
+  className={`flex-1 h-12 border-2 rounded-2xl text-sm font-medium transition-colors ${
+    retriesLeft <= 0
+      ? 'border-gray-100 text-gray-300 cursor-not-allowed'
+      : 'border-gray-200 text-gray-600 hover:border-green-400'
+  }`}
+>
+  {retriesLeft <= 0 ? 'No retries left' : `🔄 Try again (${retriesLeft} left)`}
+</button>
       </div>
 
       <button
